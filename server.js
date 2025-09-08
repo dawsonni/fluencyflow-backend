@@ -12,7 +12,7 @@ const emailTransporter = nodemailer.createTransport({
     service: 'gmail',
     auth: {
         user: process.env.GMAIL_USER || 'verification@fluencyflow.app',
-        pass: process.env.GMAIL_APP_PASSWORD
+        pass: process.env.GMAIL_APP_PASSWORD // Your app password
     }
 });
 
@@ -32,7 +32,7 @@ app.post('/api/send-verification-email', async (req, res) => {
         
         console.log('Sending verification email:', { parentEmail, childName, verificationToken });
         
-        const verificationURL = `https://fluencyflow-backend-8e979bb2fc1f.herokuapp.com/verify?token=${verificationToken}`;
+        const verificationURL = `https://fluencyflow.app/verify?token=${verificationToken}`;
         
         const htmlContent = `
         <!DOCTYPE html>
@@ -124,6 +124,38 @@ app.post('/api/send-verification-email', async (req, res) => {
     }
 });
 
+// Get current subscription endpoint
+app.get('/api/current-subscription', async (req, res) => {
+    try {
+        // For now, return a mock active subscription
+        // In production, you'd look up the actual subscription from Stripe
+        const mockSubscription = {
+            id: `sub_${Date.now()}`,
+            userId: `user_${Date.now()}`,
+            stripeSubscriptionId: `sub_stripe_${Date.now()}`,
+            stripeCustomerId: `cus_stripe_${Date.now()}`,
+            planType: "premium_individual",
+            billingCycle: "monthly",
+            status: "active",
+            currentPeriodStart: new Date().toISOString(),
+            currentPeriodEnd: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(), // 30 days from now
+            cancelAtPeriodEnd: false,
+            isTherapyReferral: false,
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString()
+        };
+        
+        console.log('Returning current subscription:', mockSubscription.id);
+        res.json(mockSubscription);
+    } catch (error) {
+        console.error('Error fetching current subscription:', error);
+        res.status(500).json({ 
+            success: false, 
+            error: error.message 
+        });
+    }
+});
+
 // Create payment intent endpoint
 app.post('/api/create-payment-intent', async (req, res) => {
     try {
@@ -190,8 +222,8 @@ app.post('/api/create-subscription', async (req, res) => {
 // Start server
 app.listen(PORT, () => {
     console.log(`🚀 FluencyFlow backend server running on port ${PORT}`);
-    console.log(`�� Health check: http://localhost:${PORT}/api/health`);
-    console.log(`�� Email verification: http://localhost:${PORT}/api/send-verification-email`);
+    console.log(`📱 Health check: http://localhost:${PORT}/api/health`);
+    console.log(`📧 Email verification: http://localhost:${PORT}/api/send-verification-email`);
     console.log(`💳 Payment intent: http://localhost:${PORT}/api/create-payment-intent`);
-    console.log(`�� Subscription: http://localhost:${PORT}/api/create-subscription`);
+    console.log(`📋 Subscription: http://localhost:${PORT}/api/create-subscription`);
 });
