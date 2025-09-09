@@ -156,6 +156,24 @@ app.get('/api/current-subscription', async (req, res) => {
     }
 });
 
+// Customer portal endpoint
+app.post('/api/customer-portal', async (req, res) => {
+    try {
+        // For now, return a mock customer portal URL
+        // In production, you'd create a Stripe customer portal session
+        const mockPortalURL = 'https://billing.stripe.com/p/login/test_customer_portal';
+        
+        console.log('Creating customer portal session');
+        res.json({ url: mockPortalURL });
+    } catch (error) {
+        console.error('Error creating customer portal session:', error);
+        res.status(500).json({ 
+            success: false, 
+            error: error.message 
+        });
+    }
+});
+
 // Create payment intent endpoint
 app.post('/api/create-payment-intent', async (req, res) => {
     try {
