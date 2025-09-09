@@ -174,6 +174,34 @@ app.post('/api/customer-portal', async (req, res) => {
     }
 });
 
+// Cancel subscription endpoint
+app.post('/api/cancel-subscription', async (req, res) => {
+    try {
+        const { subscription_id } = req.body;
+        
+        console.log('Cancelling subscription:', subscription_id);
+        
+        // Cancel the subscription in Stripe
+        const subscription = await stripe.subscriptions.cancel(subscription_id);
+        
+        console.log('Subscription cancelled:', subscription.id);
+        res.json({ 
+            success: true, 
+            subscription: {
+                id: subscription.id,
+                status: subscription.status,
+                canceled_at: subscription.canceled_at
+            }
+        });
+    } catch (error) {
+        console.error('Error cancelling subscription:', error);
+        res.status(500).json({ 
+            success: false, 
+            error: error.message 
+        });
+    }
+});
+
 // Create payment intent endpoint
 app.post('/api/create-payment-intent', async (req, res) => {
     try {
