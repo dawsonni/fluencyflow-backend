@@ -161,7 +161,7 @@ app.post('/api/customer-portal', async (req, res) => {
     try {
         // For now, return a mock customer portal URL
         // In production, you'd create a Stripe customer portal session
-        const mockPortalURL = 'https://billing.stripe.com/p/login/test_customer_portal';
+        const mockPortalURL = 'https://stripe.com';
         
         console.log('Creating customer portal session');
         res.json({ url: mockPortalURL });
