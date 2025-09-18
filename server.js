@@ -315,7 +315,7 @@ app.post('/api/create-payment-intent', async (req, res) => {
 // Create subscription endpoint
 app.post('/api/create-subscription', async (req, res) => {
     try {
-        const { plan_type, billing_cycle, is_therapy_referral, user_id, user_email } = req.body;
+        const { plan_type, billing_cycle, is_therapy_referral, user_id, user_email, payment_intent_id } = req.body;
         
         console.log('Creating subscription:', { plan_type, billing_cycle, is_therapy_referral, user_id, user_email });
         
@@ -366,7 +366,30 @@ app.post('/api/create-subscription', async (req, res) => {
             
             console.log(`Creating Stripe subscription with price ID: ${priceId}`);
             
-            // Create real Stripe subscription
+            // If we have a payment intent ID, retrieve the payment method and attach it to the customer
+            if (payment_intent_id) {
+                try {
+                    const paymentIntent = await stripe.paymentIntents.retrieve(payment_intent_id);
+                    if (paymentIntent.payment_method) {
+                        // Attach the payment method to the customer
+                        await stripe.paymentMethods.attach(paymentIntent.payment_method, {
+                            customer: customer.id,
+                        });
+                        
+                        // Set as default payment method
+                        await stripe.customers.update(customer.id, {
+                            invoice_settings: {
+                                default_payment_method: paymentIntent.payment_method,
+                            },
+                        });
+                        
+                        console.log('Payment method attached to customer:', paymentIntent.payment_method);
+                    }
+                } catch (pmError) {
+                    console.error('Error attaching payment method:', pmError);
+                    // Continue with subscription creation even if payment method attachment fails
+                }
+            }
             const stripeSubscription = await stripe.subscriptions.create({
                 customer: customer.id,
                 items: [{
