@@ -16,9 +16,14 @@ const emailTransporter = nodemailer.createTransport({
     }
 });
 
+// In-memory storage for verification tokens
+// In production, you'd want to use a database like MongoDB or PostgreSQL
+const verificationTokens = new Map();
+
 // Middleware
 app.use(cors());
 app.use(express.json());
+app.use(express.static('public')); // Serve static files
 
 // Health check endpoint
 app.get('/api/health', (req, res) => {
@@ -31,6 +36,17 @@ app.post('/api/send-verification-email', async (req, res) => {
         const { parentEmail, childName, verificationToken } = req.body;
         
         console.log('Sending verification email:', { parentEmail, childName, verificationToken });
+        
+        // Store verification token in memory (24 hour expiration)
+        const expiresAt = Date.now() + (24 * 60 * 60 * 1000); // 24 hours
+        verificationTokens.set(verificationToken, {
+            parentEmail,
+            childName,
+            token: verificationToken,
+            createdAt: Date.now(),
+            expiresAt,
+            isVerified: false
+        });
         
         const verificationURL = `https://fluencyflow.app/verify?token=${verificationToken}`;
         
@@ -120,6 +136,99 @@ app.post('/api/send-verification-email', async (req, res) => {
         res.status(500).json({ 
             success: false, 
             error: error.message 
+        });
+    }
+});
+
+// Verify parental consent token endpoint
+app.post('/api/verify-parental-consent', async (req, res) => {
+    try {
+        const { token } = req.body;
+        
+        console.log('Verifying parental consent token:', token);
+        
+        // Check if token exists in our verification storage
+        // For now, we'll use a simple in-memory store
+        // In production, you'd want to use a database
+        if (!verificationTokens.has(token)) {
+            return res.status(400).json({
+                success: false,
+                error: 'Invalid or expired verification token'
+            });
+        }
+        
+        const verificationData = verificationTokens.get(token);
+        
+        // Check if token is expired
+        if (Date.now() > verificationData.expiresAt) {
+            verificationTokens.delete(token);
+            return res.status(400).json({
+                success: false,
+                error: 'Verification token has expired'
+            });
+        }
+        
+        // Check if already verified
+        if (verificationData.isVerified) {
+            return res.status(400).json({
+                success: false,
+                error: 'This verification has already been completed'
+            });
+        }
+        
+        // Mark as verified
+        verificationData.isVerified = true;
+        verificationData.verifiedAt = Date.now();
+        verificationTokens.set(token, verificationData);
+        
+        console.log('✅ Parental consent verified for:', verificationData.childName);
+        
+        res.json({
+            success: true,
+            message: 'Parental consent verified successfully',
+            childName: verificationData.childName,
+            parentEmail: verificationData.parentEmail
+        });
+        
+    } catch (error) {
+        console.error('❌ Error verifying parental consent:', error);
+        res.status(500).json({
+            success: false,
+            error: error.message
+        });
+    }
+});
+
+// Get verification status endpoint
+app.get('/api/verification-status/:token', async (req, res) => {
+    try {
+        const { token } = req.params;
+        
+        console.log('Checking verification status for token:', token);
+        
+        if (!verificationTokens.has(token)) {
+            return res.status(404).json({
+                success: false,
+                error: 'Verification token not found'
+            });
+        }
+        
+        const verificationData = verificationTokens.get(token);
+        
+        res.json({
+            success: true,
+            isVerified: verificationData.isVerified,
+            childName: verificationData.childName,
+            parentEmail: verificationData.parentEmail,
+            expiresAt: verificationData.expiresAt,
+            verifiedAt: verificationData.verifiedAt || null
+        });
+        
+    } catch (error) {
+        console.error('❌ Error checking verification status:', error);
+        res.status(500).json({
+            success: false,
+            error: error.message
         });
     }
 });
