@@ -470,12 +470,20 @@ app.post('/api/create-subscription', async (req, res) => {
                 planType: plan_type,
                 billingCycle: billing_cycle,
                 status: stripeSubscription.status,
-                currentPeriodStart: new Date(stripeSubscription.current_period_start * 1000).toISOString(),
-                currentPeriodEnd: new Date(stripeSubscription.current_period_end * 1000).toISOString(),
-                cancelAtPeriodEnd: stripeSubscription.cancel_at_period_end,
+                currentPeriodStart: stripeSubscription.current_period_start ? 
+                    new Date(stripeSubscription.current_period_start * 1000).toISOString() : 
+                    new Date().toISOString(),
+                currentPeriodEnd: stripeSubscription.current_period_end ? 
+                    new Date(stripeSubscription.current_period_end * 1000).toISOString() : 
+                    new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(), // 30 days from now
+                cancelAtPeriodEnd: stripeSubscription.cancel_at_period_end || false,
                 isTherapyReferral: is_therapy_referral,
-                createdAt: new Date(stripeSubscription.created * 1000).toISOString(),
-                updatedAt: new Date(stripeSubscription.updated * 1000).toISOString()
+                createdAt: stripeSubscription.created ? 
+                    new Date(stripeSubscription.created * 1000).toISOString() : 
+                    new Date().toISOString(),
+                updatedAt: stripeSubscription.updated ? 
+                    new Date(stripeSubscription.updated * 1000).toISOString() : 
+                    new Date().toISOString()
             };
             
             res.json(subscription);
