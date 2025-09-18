@@ -366,6 +366,19 @@ app.post('/api/create-subscription', async (req, res) => {
             if (existingCustomers.data.length > 0) {
                 customer = existingCustomers.data[0];
                 console.log('Found existing customer:', customer.id);
+                
+                // Update customer metadata to ensure userId is set
+                if (!customer.metadata || !customer.metadata.userId) {
+                    await stripe.customers.update(customer.id, {
+                        metadata: {
+                            ...customer.metadata,
+                            userId: user_id,
+                            plan_type: plan_type,
+                            is_therapy_referral: is_therapy_referral.toString()
+                        }
+                    });
+                    console.log('Updated customer metadata with userId:', user_id);
+                }
             } else {
                 // Create new customer
                 customer = await stripe.customers.create({
