@@ -372,9 +372,6 @@ app.post('/api/create-subscription', async (req, res) => {
                 items: [{
                     price: priceId,
                 }],
-                payment_behavior: 'default_incomplete',
-                payment_settings: { save_default_payment_method: 'on_subscription' },
-                expand: ['latest_invoice.payment_intent'],
                 metadata: {
                     userId: user_id,
                     planType: plan_type,
@@ -382,6 +379,9 @@ app.post('/api/create-subscription', async (req, res) => {
                     isTherapyReferral: is_therapy_referral.toString()
                 }
             });
+            
+            console.log('Stripe subscription created successfully:', stripeSubscription.id);
+            console.log('Subscription status:', stripeSubscription.status);
             
             console.log('Created real Stripe subscription:', stripeSubscription.id);
             
@@ -406,7 +406,14 @@ app.post('/api/create-subscription', async (req, res) => {
             
         } catch (subscriptionError) {
             console.error('Error creating subscription:', subscriptionError);
-            return res.status(500).json({ error: 'Failed to create subscription' });
+            console.error('Subscription error details:', subscriptionError.message);
+            if (subscriptionError.response) {
+                console.error('Stripe API error response:', subscriptionError.response.data);
+            }
+            return res.status(500).json({ 
+                error: 'Failed to create subscription',
+                details: subscriptionError.message 
+            });
         }
         
     } catch (error) {
