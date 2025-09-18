@@ -317,7 +317,7 @@ app.post('/api/create-subscription', async (req, res) => {
     try {
         const { plan_type, billing_cycle, is_therapy_referral, user_id, user_email, payment_intent_id } = req.body;
         
-        console.log('Creating subscription:', { plan_type, billing_cycle, is_therapy_referral, user_id, user_email });
+        console.log('Creating subscription:', { plan_type, billing_cycle, is_therapy_referral, user_id, user_email, payment_intent_id });
         
         if (!user_id) {
             return res.status(400).json({ error: 'User ID is required' });
@@ -368,28 +368,50 @@ app.post('/api/create-subscription', async (req, res) => {
             
             // If we have a payment intent ID, retrieve the payment method and attach it to the customer
             if (payment_intent_id) {
+                console.log('Attempting to attach payment method from payment intent:', payment_intent_id);
                 try {
                     const paymentIntent = await stripe.paymentIntents.retrieve(payment_intent_id);
+                    console.log('Retrieved payment intent:', paymentIntent.id, 'Status:', paymentIntent.status);
+                    console.log('Payment method ID:', paymentIntent.payment_method);
+                    
                     if (paymentIntent.payment_method) {
                         // Attach the payment method to the customer
+                        console.log('Attaching payment method to customer:', customer.id);
                         await stripe.paymentMethods.attach(paymentIntent.payment_method, {
                             customer: customer.id,
                         });
                         
                         // Set as default payment method
+                        console.log('Setting as default payment method');
                         await stripe.customers.update(customer.id, {
                             invoice_settings: {
                                 default_payment_method: paymentIntent.payment_method,
                             },
                         });
                         
-                        console.log('Payment method attached to customer:', paymentIntent.payment_method);
+                        console.log('Payment method attached successfully:', paymentIntent.payment_method);
+                    } else {
+                        console.log('No payment method found in payment intent');
                     }
                 } catch (pmError) {
                     console.error('Error attaching payment method:', pmError);
+                    console.error('Payment method error details:', pmError.message);
                     // Continue with subscription creation even if payment method attachment fails
                 }
+            } else {
+                console.log('No payment intent ID provided');
             }
+            
+            // Verify customer has a payment method before creating subscription
+            const customerWithPaymentMethods = await stripe.customers.retrieve(customer.id, {
+                expand: ['invoice_settings.default_payment_method']
+            });
+            
+            console.log('Customer payment method status:', {
+                hasDefaultPaymentMethod: !!customerWithPaymentMethods.invoice_settings?.default_payment_method,
+                defaultPaymentMethodId: customerWithPaymentMethods.invoice_settings?.default_payment_method?.id
+            });
+            
             const stripeSubscription = await stripe.subscriptions.create({
                 customer: customer.id,
                 items: [{
