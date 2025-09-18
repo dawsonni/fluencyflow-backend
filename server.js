@@ -161,31 +161,7 @@ app.get('/api/current-subscription', async (req, res) => {
             
             console.log('Found Stripe customer:', customer.id);
             
-            // Check if customer has mock subscription in metadata
-            if (customer.metadata && customer.metadata.hasActiveSubscription === 'true') {
-                console.log('Found mock subscription in customer metadata');
-                
-                const subscription = {
-                    id: customer.metadata.subscriptionId,
-                    userId: userId,
-                    stripeSubscriptionId: customer.metadata.subscriptionId,
-                    stripeCustomerId: customer.id,
-                    planType: customer.metadata.planType || "premium_individual",
-                    billingCycle: customer.metadata.billingCycle || "monthly",
-                    status: customer.metadata.subscriptionStatus || "active",
-                    currentPeriodStart: new Date().toISOString(),
-                    currentPeriodEnd: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(), // 30 days from now
-                    cancelAtPeriodEnd: false,
-                    isTherapyReferral: customer.metadata.isTherapyReferral === 'true' || false,
-                    createdAt: new Date().toISOString(),
-                    updatedAt: new Date().toISOString()
-                };
-                
-                console.log('Returning mock subscription:', subscription.id);
-                return res.json(subscription);
-            }
-            
-            // Try to get real Stripe subscriptions
+            // Get real Stripe subscriptions first
             const subscriptions = await stripe.subscriptions.list({
                 customer: customer.id,
                 status: 'active',
@@ -194,6 +170,31 @@ app.get('/api/current-subscription', async (req, res) => {
             
             if (subscriptions.data.length === 0) {
                 console.log('No active subscriptions found for customer:', customer.id);
+                
+                // Fallback: Check if customer has mock subscription in metadata
+                if (customer.metadata && customer.metadata.hasActiveSubscription === 'true') {
+                    console.log('Found mock subscription in customer metadata as fallback');
+                    
+                    const subscription = {
+                        id: customer.metadata.subscriptionId,
+                        userId: userId,
+                        stripeSubscriptionId: customer.metadata.subscriptionId,
+                        stripeCustomerId: customer.id,
+                        planType: customer.metadata.planType || "premium_individual",
+                        billingCycle: customer.metadata.billingCycle || "monthly",
+                        status: customer.metadata.subscriptionStatus || "active",
+                        currentPeriodStart: new Date().toISOString(),
+                        currentPeriodEnd: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(), // 30 days from now
+                        cancelAtPeriodEnd: false,
+                        isTherapyReferral: customer.metadata.isTherapyReferral === 'true' || false,
+                        createdAt: new Date().toISOString(),
+                        updatedAt: new Date().toISOString()
+                    };
+                    
+                    console.log('Returning mock subscription:', subscription.id);
+                    return res.json(subscription);
+                }
+                
                 return res.json(null); // No active subscription
             }
             
@@ -206,13 +207,13 @@ app.get('/api/current-subscription', async (req, res) => {
                 userId: userId,
                 stripeSubscriptionId: stripeSubscription.id,
                 stripeCustomerId: customer.id,
-                planType: stripeSubscription.items.data[0]?.price?.metadata?.plan_type || "premium_individual",
-                billingCycle: stripeSubscription.items.data[0]?.price?.recurring?.interval || "monthly",
+                planType: stripeSubscription.metadata?.planType || "premium_individual",
+                billingCycle: stripeSubscription.metadata?.billingCycle || "monthly",
                 status: stripeSubscription.status,
                 currentPeriodStart: new Date(stripeSubscription.current_period_start * 1000).toISOString(),
                 currentPeriodEnd: new Date(stripeSubscription.current_period_end * 1000).toISOString(),
                 cancelAtPeriodEnd: stripeSubscription.cancel_at_period_end,
-                isTherapyReferral: stripeSubscription.metadata?.is_therapy_referral === 'true' || false,
+                isTherapyReferral: stripeSubscription.metadata?.isTherapyReferral === 'true' || false,
                 createdAt: new Date(stripeSubscription.created * 1000).toISOString(),
                 updatedAt: new Date(stripeSubscription.updated * 1000).toISOString()
             };
@@ -353,40 +354,55 @@ app.post('/api/create-subscription', async (req, res) => {
         
         // Create subscription in Stripe
         try {
-            // For now, create a mock subscription since we don't have actual price IDs set up
-            // In production, you'd use real Stripe price IDs
-            const mockSubscription = {
-                id: `sub_${Date.now()}`,
-                userId: user_id,
-                stripeSubscriptionId: `sub_stripe_${Date.now()}`,
-                stripeCustomerId: customer.id,
-                planType: plan_type,
-                billingCycle: billing_cycle,
-                status: 'active',
-                currentPeriodStart: new Date().toISOString(),
-                currentPeriodEnd: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(), // 30 days from now
-                cancelAtPeriodEnd: false,
-                isTherapyReferral: is_therapy_referral,
-                createdAt: new Date().toISOString(),
-                updatedAt: new Date().toISOString()
-            };
+            // Map plan type and billing cycle to Stripe price ID
+            let priceId;
+            if (plan_type === 'premium_individual' && billing_cycle === 'monthly') {
+                priceId = 'price_1RxXss2QVCQwj6xKh62b5DpQ'; // Monthly
+            } else if (plan_type === 'premium_individual' && billing_cycle === 'yearly') {
+                priceId = 'price_1RxXss2QVCQwj6xKHri3JRk0'; // Yearly
+            } else {
+                throw new Error(`Unsupported plan: ${plan_type} ${billing_cycle}`);
+            }
             
-            // Store the mock subscription in customer metadata so it can be found later
-            await stripe.customers.update(customer.id, {
+            console.log(`Creating Stripe subscription with price ID: ${priceId}`);
+            
+            // Create real Stripe subscription
+            const stripeSubscription = await stripe.subscriptions.create({
+                customer: customer.id,
+                items: [{
+                    price: priceId,
+                }],
+                payment_behavior: 'default_incomplete',
+                payment_settings: { save_default_payment_method: 'on_subscription' },
+                expand: ['latest_invoice.payment_intent'],
                 metadata: {
-                    ...customer.metadata,
                     userId: user_id,
-                    hasActiveSubscription: 'true',
-                    subscriptionId: mockSubscription.id,
-                    subscriptionStatus: 'active',
                     planType: plan_type,
-                    billingCycle: billing_cycle
+                    billingCycle: billing_cycle,
+                    isTherapyReferral: is_therapy_referral.toString()
                 }
             });
             
-            console.log('Created subscription:', mockSubscription.id);
-            console.log('Updated customer metadata with subscription info');
-            res.json(mockSubscription);
+            console.log('Created real Stripe subscription:', stripeSubscription.id);
+            
+            // Convert Stripe subscription to our format
+            const subscription = {
+                id: `sub_${stripeSubscription.id}`,
+                userId: user_id,
+                stripeSubscriptionId: stripeSubscription.id,
+                stripeCustomerId: customer.id,
+                planType: plan_type,
+                billingCycle: billing_cycle,
+                status: stripeSubscription.status,
+                currentPeriodStart: new Date(stripeSubscription.current_period_start * 1000).toISOString(),
+                currentPeriodEnd: new Date(stripeSubscription.current_period_end * 1000).toISOString(),
+                cancelAtPeriodEnd: stripeSubscription.cancel_at_period_end,
+                isTherapyReferral: is_therapy_referral,
+                createdAt: new Date(stripeSubscription.created * 1000).toISOString(),
+                updatedAt: new Date(stripeSubscription.updated * 1000).toISOString()
+            };
+            
+            res.json(subscription);
             
         } catch (subscriptionError) {
             console.error('Error creating subscription:', subscriptionError);
