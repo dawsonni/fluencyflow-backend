@@ -285,13 +285,44 @@ app.post('/api/cancel-subscription', async (req, res) => {
 // Create payment intent endpoint
 app.post('/api/create-payment-intent', async (req, res) => {
     try {
-        const { amount, currency, plan_type, billing_cycle, is_therapy_referral } = req.body;
+        const { amount, currency, plan_type, billing_cycle, is_therapy_referral, user_email } = req.body;
         
-        console.log('Creating payment intent:', { amount, currency, plan_type, billing_cycle, is_therapy_referral });
+        console.log('Creating payment intent:', { amount, currency, plan_type, billing_cycle, is_therapy_referral, user_email });
+        
+        // Create or find customer for this payment intent
+        let customer;
+        if (user_email) {
+            try {
+                // First, try to find existing customer
+                const existingCustomers = await stripe.customers.list({
+                    email: user_email,
+                    limit: 1
+                });
+                
+                if (existingCustomers.data.length > 0) {
+                    customer = existingCustomers.data[0];
+                    console.log('Found existing customer for payment intent:', customer.id);
+                } else {
+                    // Create new customer
+                    customer = await stripe.customers.create({
+                        email: user_email,
+                        metadata: {
+                            source: 'payment_intent_creation'
+                        }
+                    });
+                    console.log('Created new customer for payment intent:', customer.id);
+                }
+            } catch (customerError) {
+                console.error('Error with customer in payment intent:', customerError);
+                // Continue without customer if there's an error
+            }
+        }
         
         const paymentIntent = await stripe.paymentIntents.create({
             amount: amount,
             currency: currency,
+            customer: customer?.id,
+            setup_future_usage: 'off_session', // This will save the payment method for future use
             metadata: {
                 plan_type,
                 billing_cycle,
