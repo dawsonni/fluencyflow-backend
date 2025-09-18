@@ -161,7 +161,31 @@ app.get('/api/current-subscription', async (req, res) => {
             
             console.log('Found Stripe customer:', customer.id);
             
-            // Get active subscriptions for this customer
+            // Check if customer has mock subscription in metadata
+            if (customer.metadata && customer.metadata.hasActiveSubscription === 'true') {
+                console.log('Found mock subscription in customer metadata');
+                
+                const subscription = {
+                    id: customer.metadata.subscriptionId,
+                    userId: userId,
+                    stripeSubscriptionId: customer.metadata.subscriptionId,
+                    stripeCustomerId: customer.id,
+                    planType: customer.metadata.planType || "premium_individual",
+                    billingCycle: customer.metadata.billingCycle || "monthly",
+                    status: customer.metadata.subscriptionStatus || "active",
+                    currentPeriodStart: new Date().toISOString(),
+                    currentPeriodEnd: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(), // 30 days from now
+                    cancelAtPeriodEnd: false,
+                    isTherapyReferral: customer.metadata.isTherapyReferral === 'true' || false,
+                    createdAt: new Date().toISOString(),
+                    updatedAt: new Date().toISOString()
+                };
+                
+                console.log('Returning mock subscription:', subscription.id);
+                return res.json(subscription);
+            }
+            
+            // Try to get real Stripe subscriptions
             const subscriptions = await stripe.subscriptions.list({
                 customer: customer.id,
                 status: 'active',
@@ -174,7 +198,7 @@ app.get('/api/current-subscription', async (req, res) => {
             }
             
             const stripeSubscription = subscriptions.data[0];
-            console.log('Found active subscription:', stripeSubscription.id);
+            console.log('Found real Stripe subscription:', stripeSubscription.id);
             
             // Convert Stripe subscription to our format
             const subscription = {
@@ -347,7 +371,21 @@ app.post('/api/create-subscription', async (req, res) => {
                 updatedAt: new Date().toISOString()
             };
             
+            // Store the mock subscription in customer metadata so it can be found later
+            await stripe.customers.update(customer.id, {
+                metadata: {
+                    ...customer.metadata,
+                    userId: user_id,
+                    hasActiveSubscription: 'true',
+                    subscriptionId: mockSubscription.id,
+                    subscriptionStatus: 'active',
+                    planType: plan_type,
+                    billingCycle: billing_cycle
+                }
+            });
+            
             console.log('Created subscription:', mockSubscription.id);
+            console.log('Updated customer metadata with subscription info');
             res.json(mockSubscription);
             
         } catch (subscriptionError) {
