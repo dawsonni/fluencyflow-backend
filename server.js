@@ -144,12 +144,22 @@ app.get('/api/current-subscription', async (req, res) => {
         try {
             // List all customers and find one that matches our user
             const customers = await stripe.customers.list({ limit: 100 });
+            console.log(`Found ${customers.data.length} customers in Stripe`);
+            
             let customer = null;
             
             // Look for customer with matching metadata or email
             for (const c of customers.data) {
+                console.log(`Checking customer ${c.id}:`, {
+                    email: c.email,
+                    metadata: c.metadata,
+                    hasUserId: c.metadata && c.metadata.userId,
+                    userIdMatch: c.metadata && c.metadata.userId === userId
+                });
+                
                 if (c.metadata && c.metadata.userId === userId) {
                     customer = c;
+                    console.log('Found matching customer:', c.id);
                     break;
                 }
             }
@@ -368,8 +378,10 @@ app.post('/api/create-subscription', async (req, res) => {
                 console.log('Found existing customer:', customer.id);
                 
                 // Update customer metadata to ensure userId is set
+                console.log('Customer metadata before update:', customer.metadata);
                 if (!customer.metadata || !customer.metadata.userId) {
-                    await stripe.customers.update(customer.id, {
+                    console.log('Updating customer metadata with userId:', user_id);
+                    const updatedCustomer = await stripe.customers.update(customer.id, {
                         metadata: {
                             ...customer.metadata,
                             userId: user_id,
@@ -377,7 +389,9 @@ app.post('/api/create-subscription', async (req, res) => {
                             is_therapy_referral: is_therapy_referral.toString()
                         }
                     });
-                    console.log('Updated customer metadata with userId:', user_id);
+                    console.log('Customer metadata after update:', updatedCustomer.metadata);
+                } else {
+                    console.log('Customer already has userId in metadata:', customer.metadata.userId);
                 }
             } else {
                 // Create new customer
