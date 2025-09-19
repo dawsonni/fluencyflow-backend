@@ -347,7 +347,7 @@ app.post('/api/send-verification-email', async (req, res) => {
             isVerified: false
         });
         
-        const verificationURL = `https://fluencyflow.app/verify?token=${verificationToken}`;
+        const verificationURL = `https://fluencyflow-backend-8e979bb2fc1f.herokuapp.com/verify?token=${verificationToken}`;
         
         const htmlContent = `
         <!DOCTYPE html>
