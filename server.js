@@ -714,7 +714,7 @@ app.get('/api/current-subscription', async (req, res) => {
                         userId: userId,
                         stripeSubscriptionId: customer.metadata.subscriptionId,
                         stripeCustomerId: customer.id,
-                        planType: customer.metadata.planType || "premium_individual",
+                        planType: customer.metadata.planType || "professional",
                         billingCycle: customer.metadata.billingCycle || "monthly",
                         status: customer.metadata.subscriptionStatus || "active",
                         currentPeriodStart: new Date().toISOString(),
@@ -741,7 +741,7 @@ app.get('/api/current-subscription', async (req, res) => {
                 userId: userId,
                 stripeSubscriptionId: stripeSubscription.id,
                 stripeCustomerId: customer.id,
-                planType: stripeSubscription.metadata?.planType || "premium_individual",
+                planType: stripeSubscription.metadata?.planType || "professional",
                 billingCycle: stripeSubscription.metadata?.billingCycle || "monthly",
                 status: stripeSubscription.status,
                 currentPeriodStart: stripeSubscription.current_period_start ? 
@@ -898,7 +898,7 @@ app.post('/api/create-subscription', async (req, res) => {
             await new Promise(resolve => setTimeout(resolve, 100));
         }
         
-        const { plan_type, billing_cycle, is_therapy_referral, user_id, user_email, payment_intent_id } = req.body;
+        const { plan_type, billing_cycle, is_therapy_referral, user_id, user_email, payment_intent_id, price_id, product_id } = req.body;
         
         console.log('Creating subscription:', { plan_type, billing_cycle, is_therapy_referral, user_id, user_email, payment_intent_id });
         
@@ -954,14 +954,26 @@ app.post('/api/create-subscription', async (req, res) => {
         
         // Create subscription in Stripe
         try {
-            // Map plan type and billing cycle to Stripe price ID
-            let priceId;
-            if (plan_type === 'premium_individual' && billing_cycle === 'monthly') {
-                priceId = 'price_1RxXss2QVCQwj6xKh62b5DpQ'; // Monthly
-            } else if (plan_type === 'premium_individual' && billing_cycle === 'yearly') {
-                priceId = 'price_1RxXss2QVCQwj6xKHri3JRk0'; // Yearly
-            } else {
-                throw new Error(`Unsupported plan: ${plan_type} ${billing_cycle}`);
+            // Use the price_id from the request body (sent from iOS app)
+            let priceId = price_id;
+            
+            // Fallback to hardcoded mapping if price_id not provided (for backward compatibility)
+            if (!priceId) {
+                if (plan_type === 'starter' && billing_cycle === 'monthly') {
+                    priceId = 'price_1SBMCh2QVCQwj6xKAxuwKisC';
+                } else if (plan_type === 'starter' && billing_cycle === 'yearly') {
+                    priceId = 'price_1SBMGX2QVCQwj6xKb9suTwhR';
+                } else if (plan_type === 'professional' && billing_cycle === 'monthly') {
+                    priceId = 'price_1SBMHE2QVCQwj6xKgYNPRtB6';
+                } else if (plan_type === 'professional' && billing_cycle === 'yearly') {
+                    priceId = 'price_1SBMHU2QVCQwj6xKk4AtbNBd';
+                } else if (plan_type === 'premium' && billing_cycle === 'monthly') {
+                    priceId = 'price_1SBMHv2QVCQwj6xKON7BWqbX';
+                } else if (plan_type === 'premium' && billing_cycle === 'yearly') {
+                    priceId = 'price_1SBMI52QVCQwj6xKlJR975L0';
+                } else {
+                    throw new Error(`Unsupported plan: ${plan_type} ${billing_cycle}`);
+                }
             }
             
             console.log(`Creating Stripe subscription with price ID: ${priceId}`);
