@@ -24,16 +24,23 @@ async function getSecret(secretName) {
 
 // Initialize Stripe with Key Vault
 let stripe;
-(async () => {
+let stripeInitialized = false;
+
+async function initializeStripe() {
     try {
         const stripeSecretKey = await getSecret('stripe-secret-key-test');
         stripe = require('stripe')(stripeSecretKey);
+        stripeInitialized = true;
         console.log('✅ Stripe initialized with Key Vault');
     } catch (error) {
         console.error('❌ Failed to initialize Stripe:', error);
         stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
+        stripeInitialized = true;
     }
-})();
+}
+
+// Initialize Stripe
+initializeStripe();
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -819,6 +826,11 @@ app.post('/api/cancel-subscription', async (req, res) => {
 // Create payment intent endpoint
 app.post('/api/create-payment-intent', async (req, res) => {
     try {
+        // Wait for Stripe to be initialized
+        while (!stripeInitialized) {
+            await new Promise(resolve => setTimeout(resolve, 100));
+        }
+        
         const { amount, currency, plan_type, billing_cycle, is_therapy_referral, user_email } = req.body;
         
         console.log('Creating payment intent:', { amount, currency, plan_type, billing_cycle, is_therapy_referral, user_email });
@@ -880,6 +892,11 @@ app.post('/api/create-payment-intent', async (req, res) => {
 // Create subscription endpoint
 app.post('/api/create-subscription', async (req, res) => {
     try {
+        // Wait for Stripe to be initialized
+        while (!stripeInitialized) {
+            await new Promise(resolve => setTimeout(resolve, 100));
+        }
+        
         const { plan_type, billing_cycle, is_therapy_referral, user_id, user_email, payment_intent_id } = req.body;
         
         console.log('Creating subscription:', { plan_type, billing_cycle, is_therapy_referral, user_id, user_email, payment_intent_id });
