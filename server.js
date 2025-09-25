@@ -30,8 +30,6 @@ async function initializeStripe() {
     try {
         const stripeSecretKey = await getSecret('stripe-secret-key-test');
         console.log('🔍 Retrieved Stripe key from Key Vault:', stripeSecretKey.substring(0, 20) + '...');
-        console.log('🔍 Full Stripe key length:', stripeSecretKey.length);
-        console.log('🔍 Full Stripe key:', stripeSecretKey);
         stripe = require('stripe')(stripeSecretKey);
         stripeInitialized = true;
         console.log('✅ Stripe initialized with Key Vault');
