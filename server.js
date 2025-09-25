@@ -1,20 +1,67 @@
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
-const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
+const { DefaultAzureCredential } = require('@azure/identity');
+const { SecretClient } = require('@azure/keyvault-secrets');
 const nodemailer = require('nodemailer');
+
+// Initialize Azure Key Vault client
+const credential = new DefaultAzureCredential();
+const keyVaultUrl = "https://fluencyflow-keyvault.vault.azure.net/";
+const client = new SecretClient(keyVaultUrl, credential);
+
+// Function to get secrets from Key Vault
+async function getSecret(secretName) {
+    try {
+        const secret = await client.getSecret(secretName);
+        return secret.value;
+    } catch (error) {
+        console.error(`Failed to get secret ${secretName}:`, error);
+        // Fallback to environment variables
+        return process.env[secretName.toUpperCase().replace(/-/g, '_')];
+    }
+}
+
+// Initialize Stripe with Key Vault
+let stripe;
+(async () => {
+    try {
+        const stripeSecretKey = await getSecret('stripe-secret-key-test');
+        stripe = require('stripe')(stripeSecretKey);
+        console.log('✅ Stripe initialized with Key Vault');
+    } catch (error) {
+        console.error('❌ Failed to initialize Stripe:', error);
+        stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
+    }
+})();
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Email configuration
-const emailTransporter = nodemailer.createTransport({
-    service: 'gmail',
-    auth: {
-        user: process.env.GMAIL_USER || 'verification@fluencyflow.app',
-        pass: process.env.GMAIL_APP_PASSWORD // Your app password
+// Email configuration with Azure Key Vault
+let emailTransporter;
+(async () => {
+    try {
+        const gmailPassword = await getSecret('gmail-app-password');
+        emailTransporter = nodemailer.createTransport({
+            service: 'gmail',
+            auth: {
+                user: process.env.GMAIL_USER || 'verification@fluencyflow.app',
+                pass: gmailPassword
+            }
+        });
+        console.log('✅ Email transporter initialized with Key Vault');
+    } catch (error) {
+        console.error('❌ Failed to initialize email transporter:', error);
+        emailTransporter = nodemailer.createTransport({
+            service: 'gmail',
+            auth: {
+                user: process.env.GMAIL_USER || 'verification@fluencyflow.app',
+                pass: process.env.GMAIL_APP_PASSWORD
+            }
+        });
     }
-});
+})();
 
 // In-memory storage for verification tokens
 // In production, you'd want to use a database like MongoDB or PostgreSQL
@@ -28,6 +75,67 @@ app.use(express.static('public')); // Serve static files
 // Health check endpoint
 app.get('/api/health', (req, res) => {
     res.json({ status: 'ok', message: 'FluencyFlow backend is running' });
+});
+
+// Test Azure Key Vault secrets endpoint
+app.get('/api/test-secrets', async (req, res) => {
+    try {
+        const secrets = {};
+        
+        // Test Stripe keys
+        try {
+            secrets.stripeSecretKey = await getSecret('stripe-secret-key-test');
+            secrets.stripePublishableKey = await getSecret('stripe-publishable-key-test');
+        } catch (error) {
+            secrets.stripeError = error.message;
+        }
+        
+        // Test Azure keys
+        try {
+            secrets.azureSpeechKey = await getSecret('azure-speech-key');
+            secrets.azureOpenAIKey = await getSecret('azure-openai-key');
+        } catch (error) {
+            secrets.azureError = error.message;
+        }
+        
+        // Test Firebase key
+        try {
+            secrets.firebaseAPIKey = await getSecret('firebase-api-key');
+        } catch (error) {
+            secrets.firebaseError = error.message;
+        }
+        
+        // Test Gmail password
+        try {
+            secrets.gmailPassword = await getSecret('gmail-app-password');
+        } catch (error) {
+            secrets.gmailError = error.message;
+        }
+        
+        res.json({
+            success: true,
+            message: 'Azure Key Vault secrets test',
+            secrets: {
+                stripeSecretKey: secrets.stripeSecretKey ? `${secrets.stripeSecretKey.substring(0, 20)}...` : 'Not found',
+                stripePublishableKey: secrets.stripePublishableKey ? `${secrets.stripePublishableKey.substring(0, 20)}...` : 'Not found',
+                azureSpeechKey: secrets.azureSpeechKey ? `${secrets.azureSpeechKey.substring(0, 20)}...` : 'Not found',
+                azureOpenAIKey: secrets.azureOpenAIKey ? `${secrets.azureOpenAIKey.substring(0, 20)}...` : 'Not found',
+                firebaseAPIKey: secrets.firebaseAPIKey ? `${secrets.firebaseAPIKey.substring(0, 20)}...` : 'Not found',
+                gmailPassword: secrets.gmailPassword ? `${secrets.gmailPassword.substring(0, 8)}...` : 'Not found'
+            },
+            errors: {
+                stripeError: secrets.stripeError || null,
+                azureError: secrets.azureError || null,
+                firebaseError: secrets.firebaseError || null,
+                gmailError: secrets.gmailError || null
+            }
+        });
+    } catch (error) {
+        res.status(500).json({
+            success: false,
+            error: error.message
+        });
+    }
 });
 
 // Serve verification page
