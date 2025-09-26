@@ -850,6 +850,72 @@ app.post('/api/customer-portal', async (req, res) => {
     }
 });
 
+// Create setup intent endpoint for adding payment methods
+app.post('/api/create-setup-intent', async (req, res) => {
+    try {
+        const { user_id, user_email } = req.body;
+        
+        if (!user_id || !user_email) {
+            return res.status(400).json({ 
+                success: false, 
+                error: 'User ID and email are required' 
+            });
+        }
+        
+        console.log('Creating setup intent for user:', user_id);
+        
+        // First, find or create the Stripe customer
+        let customer;
+        try {
+            // Try to find existing customer by email
+            const customers = await stripe.customers.list({
+                email: user_email,
+                limit: 1
+            });
+            
+            if (customers.data.length > 0) {
+                customer = customers.data[0];
+                console.log('Found existing customer:', customer.id);
+            } else {
+                // Create new customer
+                customer = await stripe.customers.create({
+                    email: user_email,
+                    metadata: {
+                        user_id: user_id
+                    }
+                });
+                console.log('Created new customer:', customer.id);
+            }
+        } catch (error) {
+            console.error('Error finding/creating customer:', error);
+            return res.status(500).json({ 
+                success: false, 
+                error: 'Failed to find or create customer' 
+            });
+        }
+        
+        // Create setup intent
+        const setupIntent = await stripe.setupIntents.create({
+            customer: customer.id,
+            payment_method_types: ['card'],
+            usage: 'off_session' // For future payments
+        });
+        
+        console.log('Setup intent created:', setupIntent.id);
+        res.json({ 
+            success: true,
+            client_secret: setupIntent.client_secret 
+        });
+        
+    } catch (error) {
+        console.error('Error creating setup intent:', error);
+        res.status(500).json({ 
+            success: false, 
+            error: error.message 
+        });
+    }
+});
+
 // Cancel subscription endpoint
 app.post('/api/cancel-subscription', async (req, res) => {
     try {
@@ -1291,4 +1357,5 @@ app.listen(PORT, () => {
     console.log(`💳 Payment intent: http://localhost:${PORT}/api/create-payment-intent`);
     console.log(`📋 Subscription: http://localhost:${PORT}/api/create-subscription`);
     console.log(`🔄 Modify Subscription: http://localhost:${PORT}/api/modify-subscription`);
+    console.log(`💳 Setup Intent: http://localhost:${PORT}/api/create-setup-intent`);
 });
