@@ -22,6 +22,16 @@ async function getSecret(secretName) {
     }
 }
 
+// Helper function to get product ID for plan type
+function getProductId(planType) {
+    const productMapping = {
+        'starter': 'prod_T7bU5ypppEYoVr',
+        'professional': 'prod_T7bU5ypppEYoVr', 
+        'premium': 'prod_T7bU5ypppEYoVr'
+    };
+    return productMapping[planType] || 'prod_T7bU5ypppEYoVr';
+}
+
 // Initialize Stripe with Key Vault
 let stripe;
 let stripeInitialized = false;
@@ -1176,7 +1186,7 @@ app.post('/api/modify-subscription', async (req, res) => {
                 metadata: {
                     plan_type: plan_type,
                     billing_cycle: billing_cycle,
-                    product_id: product_id || StripeProductMapping.getProductId(plan_type),
+                    product_id: product_id || getProductId(plan_type),
                     is_therapy_referral: 'false',
                     modified_at: new Date().toISOString()
                 }
