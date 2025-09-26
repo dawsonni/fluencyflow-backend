@@ -1087,6 +1087,162 @@ app.post('/api/create-subscription', async (req, res) => {
     }
 });
 
+// Modify subscription endpoint (for upgrades/downgrades)
+app.post('/api/modify-subscription', async (req, res) => {
+    try {
+        // Wait for Stripe to be initialized
+        while (!stripeInitialized) {
+            await new Promise(resolve => setTimeout(resolve, 100));
+        }
+        
+        const { plan_type, billing_cycle, user_id, user_email, price_id, product_id } = req.body;
+        
+        console.log('Modifying subscription:', { plan_type, billing_cycle, user_id, user_email, price_id });
+        
+        if (!user_id) {
+            return res.status(400).json({ error: 'User ID is required' });
+        }
+        
+        // Find existing customer
+        let customer;
+        try {
+            const existingCustomers = await stripe.customers.list({
+                email: user_email,
+                limit: 1
+            });
+            
+            if (existingCustomers.data.length === 0) {
+                return res.status(404).json({ error: 'Customer not found' });
+            }
+            
+            customer = existingCustomers.data[0];
+            console.log('Found existing customer:', customer.id);
+        } catch (customerError) {
+            console.error('Error finding customer:', customerError);
+            return res.status(500).json({ error: 'Failed to find customer' });
+        }
+        
+        // Find existing active subscription
+        let existingSubscription;
+        try {
+            const subscriptions = await stripe.subscriptions.list({
+                customer: customer.id,
+                status: 'active',
+                limit: 1
+            });
+            
+            if (subscriptions.data.length === 0) {
+                return res.status(404).json({ error: 'No active subscription found' });
+            }
+            
+            existingSubscription = subscriptions.data[0];
+            console.log('Found existing subscription:', existingSubscription.id);
+        } catch (subError) {
+            console.error('Error finding subscription:', subError);
+            return res.status(500).json({ error: 'Failed to find existing subscription' });
+        }
+        
+        // Get the new price ID
+        let newPriceId = price_id;
+        if (!newPriceId) {
+            // Fallback to hardcoded mapping
+            if (plan_type === 'starter' && billing_cycle === 'monthly') {
+                newPriceId = 'price_1SBMCh2QVCQwj6xKAxuwKisC';
+            } else if (plan_type === 'starter' && billing_cycle === 'yearly') {
+                newPriceId = 'price_1SBMGX2QVCQwj6xKb9suTwhR';
+            } else if (plan_type === 'professional' && billing_cycle === 'monthly') {
+                newPriceId = 'price_1SBMHE2QVCQwj6xKgYNPRtB6';
+            } else if (plan_type === 'professional' && billing_cycle === 'yearly') {
+                newPriceId = 'price_1SBMHU2QVCQwj6xKk4AtbNBd';
+            } else if (plan_type === 'premium' && billing_cycle === 'monthly') {
+                newPriceId = 'price_1SBMHv2QVCQwj6xKON7BWqbX';
+            } else if (plan_type === 'premium' && billing_cycle === 'yearly') {
+                newPriceId = 'price_1SBMI52QVCQwj6xKlJR975L0';
+            } else {
+                throw new Error(`Unsupported plan: ${plan_type} ${billing_cycle}`);
+            }
+        }
+        
+        console.log(`Modifying subscription to price ID: ${newPriceId}`);
+        
+        // Update the subscription with the new plan
+        try {
+            const updatedSubscription = await stripe.subscriptions.update(existingSubscription.id, {
+                items: [{
+                    id: existingSubscription.items.data[0].id,
+                    price: newPriceId,
+                }],
+                proration_behavior: 'create_prorations', // This handles proration automatically
+                metadata: {
+                    plan_type: plan_type,
+                    billing_cycle: billing_cycle,
+                    product_id: product_id || StripeProductMapping.getProductId(plan_type),
+                    is_therapy_referral: 'false',
+                    modified_at: new Date().toISOString()
+                }
+            });
+            
+            console.log('Subscription updated successfully:', updatedSubscription.id);
+            
+            // Update customer metadata
+            await stripe.customers.update(customer.id, {
+                metadata: {
+                    ...customer.metadata,
+                    plan_type: plan_type,
+                    billing_cycle: billing_cycle,
+                    last_modified: new Date().toISOString()
+                }
+            });
+            
+            // Save to database
+            const subscriptionData = {
+                id: updatedSubscription.id,
+                userId: user_id,
+                planType: plan_type,
+                billingCycle: billing_cycle,
+                status: updatedSubscription.status,
+                stripeSubscriptionId: updatedSubscription.id,
+                stripeCustomerId: customer.id,
+                currentPeriodStart: new Date(updatedSubscription.current_period_start * 1000).toISOString(),
+                currentPeriodEnd: new Date(updatedSubscription.current_period_end * 1000).toISOString(),
+                cancelAtPeriodEnd: updatedSubscription.cancel_at_period_end,
+                createdAt: new Date(updatedSubscription.created * 1000).toISOString(),
+                updatedAt: new Date().toISOString()
+            };
+            
+            // Update subscription in database
+            const subscriptionRef = db.collection('subscriptions').doc(updatedSubscription.id);
+            await subscriptionRef.set(subscriptionData, { merge: true });
+            
+            console.log('✅ Subscription modified successfully:', updatedSubscription.id);
+            
+            res.json({
+                success: true,
+                subscription: {
+                    id: updatedSubscription.id,
+                    status: updatedSubscription.status,
+                    plan_type: plan_type,
+                    billing_cycle: billing_cycle,
+                    current_period_start: updatedSubscription.current_period_start,
+                    current_period_end: updatedSubscription.current_period_end,
+                    proration_behavior: 'create_prorations'
+                }
+            });
+            
+        } catch (updateError) {
+            console.error('Error updating subscription:', updateError);
+            res.status(500).json({ 
+                error: 'Failed to update subscription',
+                details: updateError.message 
+            });
+        }
+        
+    } catch (error) {
+        console.error('Error modifying subscription:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
 // Start server
 app.listen(PORT, () => {
     console.log(`🚀 FluencyFlow backend server running on port ${PORT}`);
@@ -1094,4 +1250,5 @@ app.listen(PORT, () => {
     console.log(`📧 Email verification: http://localhost:${PORT}/api/send-verification-email`);
     console.log(`💳 Payment intent: http://localhost:${PORT}/api/create-payment-intent`);
     console.log(`📋 Subscription: http://localhost:${PORT}/api/create-subscription`);
+    console.log(`🔄 Modify Subscription: http://localhost:${PORT}/api/modify-subscription`);
 });
