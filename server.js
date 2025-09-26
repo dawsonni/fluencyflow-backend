@@ -791,12 +791,56 @@ app.get('/api/current-subscription', async (req, res) => {
 // Customer portal endpoint
 app.post('/api/customer-portal', async (req, res) => {
     try {
-        // For now, return a mock customer portal URL
-        // In production, you'd create a Stripe customer portal session
-        const mockPortalURL = 'https://stripe.com';
+        const { user_id, user_email } = req.body;
         
-        console.log('Creating customer portal session');
-        res.json({ url: mockPortalURL });
+        if (!user_id || !user_email) {
+            return res.status(400).json({ 
+                success: false, 
+                error: 'User ID and email are required' 
+            });
+        }
+        
+        console.log('Creating customer portal session for user:', user_id);
+        
+        // First, find or create the Stripe customer
+        let customer;
+        try {
+            // Try to find existing customer by email
+            const customers = await stripe.customers.list({
+                email: user_email,
+                limit: 1
+            });
+            
+            if (customers.data.length > 0) {
+                customer = customers.data[0];
+                console.log('Found existing customer:', customer.id);
+            } else {
+                // Create new customer
+                customer = await stripe.customers.create({
+                    email: user_email,
+                    metadata: {
+                        user_id: user_id
+                    }
+                });
+                console.log('Created new customer:', customer.id);
+            }
+        } catch (error) {
+            console.error('Error finding/creating customer:', error);
+            return res.status(500).json({ 
+                success: false, 
+                error: 'Failed to find or create customer' 
+            });
+        }
+        
+        // Create customer portal session
+        const portalSession = await stripe.billingPortal.sessions.create({
+            customer: customer.id,
+            return_url: 'https://fluencyflow-backend-8e979bb2fc1f.herokuapp.com/api/customer-portal-return'
+        });
+        
+        console.log('Customer portal session created:', portalSession.id);
+        res.json({ url: portalSession.url });
+        
     } catch (error) {
         console.error('Error creating customer portal session:', error);
         res.status(500).json({ 
@@ -813,8 +857,10 @@ app.post('/api/cancel-subscription', async (req, res) => {
         
         console.log('Cancelling subscription:', subscription_id);
         
-        // Cancel the subscription in Stripe
-        const subscription = await stripe.subscriptions.cancel(subscription_id);
+        // Cancel the subscription at the end of the current period
+        const subscription = await stripe.subscriptions.update(subscription_id, {
+            cancel_at_period_end: true
+        });
         
         console.log('Subscription cancelled:', subscription.id);
         res.json({ 
@@ -822,7 +868,8 @@ app.post('/api/cancel-subscription', async (req, res) => {
             subscription: {
                 id: subscription.id,
                 status: subscription.status,
-                canceled_at: subscription.canceled_at
+                cancel_at_period_end: subscription.cancel_at_period_end,
+                current_period_end: subscription.current_period_end
             }
         });
     } catch (error) {
@@ -1204,25 +1251,8 @@ app.post('/api/modify-subscription', async (req, res) => {
                 }
             });
             
-            // Save to database
-            const subscriptionData = {
-                id: updatedSubscription.id,
-                userId: user_id,
-                planType: plan_type,
-                billingCycle: billing_cycle,
-                status: updatedSubscription.status,
-                stripeSubscriptionId: updatedSubscription.id,
-                stripeCustomerId: customer.id,
-                currentPeriodStart: new Date(updatedSubscription.current_period_start * 1000).toISOString(),
-                currentPeriodEnd: new Date(updatedSubscription.current_period_end * 1000).toISOString(),
-                cancelAtPeriodEnd: updatedSubscription.cancel_at_period_end,
-                createdAt: new Date(updatedSubscription.created * 1000).toISOString(),
-                updatedAt: new Date().toISOString()
-            };
-            
-            // Update subscription in database
-            const subscriptionRef = db.collection('subscriptions').doc(updatedSubscription.id);
-            await subscriptionRef.set(subscriptionData, { merge: true });
+            // Note: Database operations are handled by the iOS app
+            // The iOS app will fetch the updated subscription from Stripe
             
             console.log('✅ Subscription modified successfully:', updatedSubscription.id);
             
