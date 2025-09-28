@@ -678,44 +678,49 @@ app.get('/api/current-subscription', async (req, res) => {
         // In a real implementation, you'd store the Stripe customer ID with the user
         
         try {
-            // First try to find customer by searching with pagination
-            let customer = null;
-            let hasMore = true;
-            let startingAfter = null;
+            // Get user email from Firebase first (more reliable than metadata lookup)
+            const admin = require('firebase-admin');
+            let userEmail = null;
             
-            while (hasMore && !customer) {
-                const listParams = { limit: 100 };
-                if (startingAfter) {
-                    listParams.starting_after = startingAfter;
-                }
-                
-                const customers = await stripe.customers.list(listParams);
-                console.log(`Checking ${customers.data.length} customers in this batch`);
-                
-                // Look for customer with matching metadata
-                for (const c of customers.data) {
-                    console.log(`Checking customer ${c.id}:`, {
-                        email: c.email,
-                        metadata: c.metadata,
-                        hasUserId: c.metadata && c.metadata.userId,
-                        hasUserIdOld: c.metadata && c.metadata.user_id,
-                        userIdMatch: c.metadata && c.metadata.userId === userId,
-                        userIdOldMatch: c.metadata && c.metadata.user_id === userId,
-                        userIdValue: c.metadata ? c.metadata.userId : 'no metadata',
-                        userIdOldValue: c.metadata ? c.metadata.user_id : 'no metadata'
-                    });
+            let customer = null;
+            
+            try {
+                const userDoc = await admin.firestore().collection('users').doc(userId).get();
+                if (userDoc.exists) {
+                    const userData = userDoc.data();
+                    userEmail = userData.email;
+                    console.log('Found user email from Firebase:', userEmail);
                     
-                    if (c.metadata && (c.metadata.userId === userId || c.metadata.user_id === userId)) {
-                        customer = c;
-                        console.log('Found matching customer:', c.id);
-                        break;
+                    // Check if we have stored Stripe customer ID (most efficient)
+                    if (userData.stripeCustomerId) {
+                        console.log('Found stored Stripe customer ID:', userData.stripeCustomerId);
+                        try {
+                            customer = await stripe.customers.retrieve(userData.stripeCustomerId);
+                            console.log('Retrieved customer by stored ID:', customer.id);
+                        } catch (stripeError) {
+                            console.log('Stored customer ID invalid, falling back to email lookup');
+                            customer = null;
+                        }
                     }
+                } else {
+                    console.log('User document not found in Firebase for userId:', userId);
+                    return res.json(null);
                 }
+            } catch (firebaseError) {
+                console.log('Failed to fetch user from Firebase:', firebaseError.message);
+                return res.json(null);
+            }
+            
+            // If no customer found by stored ID, try email lookup
+            if (!customer && userEmail) {
+                const customers = await stripe.customers.list({
+                    email: userEmail,
+                    limit: 1
+                });
                 
-                // Check if there are more customers to search
-                hasMore = customers.has_more;
-                if (hasMore && customers.data.length > 0) {
-                    startingAfter = customers.data[customers.data.length - 1].id;
+                if (customers.data.length > 0) {
+                    customer = customers.data[0];
+                    console.log('Found Stripe customer by email:', customer.id);
                 }
             }
             
@@ -1158,6 +1163,18 @@ app.post('/api/create-subscription', async (req, res) => {
             
             console.log('Stripe subscription created successfully:', stripeSubscription.id);
             console.log('Subscription status:', stripeSubscription.status);
+            
+            // Store Stripe customer ID in Firebase user document for future lookups
+            try {
+                await admin.firestore().collection('users').doc(user_id).update({
+                    stripeCustomerId: customer.id,
+                    lastUpdated: new Date().toISOString()
+                });
+                console.log('Updated Firebase user with Stripe customer ID:', customer.id);
+            } catch (firebaseUpdateError) {
+                console.log('Failed to update Firebase user with Stripe customer ID:', firebaseUpdateError.message);
+                // Don't fail the subscription creation if Firebase update fails
+            }
             
             console.log('Created real Stripe subscription:', stripeSubscription.id);
             
