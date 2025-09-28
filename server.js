@@ -690,6 +690,7 @@ app.get('/api/current-subscription', async (req, res) => {
                     const userData = userDoc.data();
                     userEmail = userData.email;
                     console.log('Found user email from Firebase:', userEmail);
+                    console.log('User data keys:', Object.keys(userData));
                     
                     // Check if we have stored Stripe customer ID (most efficient)
                     if (userData.stripeCustomerId) {
