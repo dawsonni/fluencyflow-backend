@@ -670,31 +670,52 @@ app.get('/api/current-subscription', async (req, res) => {
         }
         
         console.log('Looking up subscription for user:', userId);
+        console.log('User ID type:', typeof userId);
+        console.log('User ID length:', userId ? userId.length : 'null');
         
         // Try to find customer in Stripe by email or metadata
         // For now, we'll check if there are any active subscriptions
         // In a real implementation, you'd store the Stripe customer ID with the user
         
         try {
-            // List all customers and find one that matches our user
-            const customers = await stripe.customers.list({ limit: 100 });
-            console.log(`Found ${customers.data.length} customers in Stripe`);
-            
+            // First try to find customer by searching with pagination
             let customer = null;
+            let hasMore = true;
+            let startingAfter = null;
             
-            // Look for customer with matching metadata or email
-            for (const c of customers.data) {
-                console.log(`Checking customer ${c.id}:`, {
-                    email: c.email,
-                    metadata: c.metadata,
-                    hasUserId: c.metadata && c.metadata.userId,
-                    userIdMatch: c.metadata && c.metadata.userId === userId
-                });
+            while (hasMore && !customer) {
+                const listParams = { limit: 100 };
+                if (startingAfter) {
+                    listParams.starting_after = startingAfter;
+                }
                 
-                if (c.metadata && c.metadata.userId === userId) {
-                    customer = c;
-                    console.log('Found matching customer:', c.id);
-                    break;
+                const customers = await stripe.customers.list(listParams);
+                console.log(`Checking ${customers.data.length} customers in this batch`);
+                
+                // Look for customer with matching metadata
+                for (const c of customers.data) {
+                    console.log(`Checking customer ${c.id}:`, {
+                        email: c.email,
+                        metadata: c.metadata,
+                        hasUserId: c.metadata && c.metadata.userId,
+                        hasUserIdOld: c.metadata && c.metadata.user_id,
+                        userIdMatch: c.metadata && c.metadata.userId === userId,
+                        userIdOldMatch: c.metadata && c.metadata.user_id === userId,
+                        userIdValue: c.metadata ? c.metadata.userId : 'no metadata',
+                        userIdOldValue: c.metadata ? c.metadata.user_id : 'no metadata'
+                    });
+                    
+                    if (c.metadata && (c.metadata.userId === userId || c.metadata.user_id === userId)) {
+                        customer = c;
+                        console.log('Found matching customer:', c.id);
+                        break;
+                    }
+                }
+                
+                // Check if there are more customers to search
+                hasMore = customers.has_more;
+                if (hasMore && customers.data.length > 0) {
+                    startingAfter = customers.data[customers.data.length - 1].id;
                 }
             }
             
@@ -794,7 +815,7 @@ app.post('/api/customer-portal', async (req, res) => {
                 customer = await stripe.customers.create({
                     email: user_email,
                     metadata: {
-                        user_id: user_id
+                        userId: user_id
                     }
                 });
                 console.log('Created new customer:', customer.id);
@@ -856,7 +877,7 @@ app.post('/api/create-setup-intent', async (req, res) => {
                 customer = await stripe.customers.create({
                     email: user_email,
                     metadata: {
-                        user_id: user_id
+                        userId: user_id
                     }
                 });
                 console.log('Created new customer:', customer.id);
