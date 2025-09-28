@@ -714,32 +714,7 @@ app.get('/api/current-subscription', async (req, res) => {
             
             if (subscriptions.data.length === 0) {
                 console.log('No active subscriptions found for customer:', customer.id);
-                
-                // Fallback: Check if customer has mock subscription in metadata
-                if (customer.metadata && customer.metadata.hasActiveSubscription === 'true') {
-                    console.log('Found mock subscription in customer metadata as fallback');
-                    
-                    const subscription = {
-                        id: customer.metadata.subscriptionId,
-                        userId: userId,
-                        stripeSubscriptionId: customer.metadata.subscriptionId,
-                        stripeCustomerId: customer.id,
-                        planType: customer.metadata.planType || "professional",
-                        billingCycle: customer.metadata.billingCycle || "monthly",
-                        status: customer.metadata.subscriptionStatus || "active",
-                        currentPeriodStart: new Date().toISOString(),
-                        currentPeriodEnd: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(), // 30 days from now
-                        cancelAtPeriodEnd: false,
-                        isTherapyReferral: customer.metadata.isTherapyReferral === 'true' || false,
-                        createdAt: new Date().toISOString(),
-                        updatedAt: new Date().toISOString()
-                    };
-                    
-                    console.log('Returning mock subscription:', subscription.id);
-                    return res.json(subscription);
-                }
-                
-                return res.json(null); // No active subscription
+                return res.json(null); // No subscription - new users should be inactive
             }
             
             const stripeSubscription = subscriptions.data[0];
@@ -751,7 +726,7 @@ app.get('/api/current-subscription', async (req, res) => {
                 userId: userId,
                 stripeSubscriptionId: stripeSubscription.id,
                 stripeCustomerId: customer.id,
-                planType: stripeSubscription.metadata?.planType || "professional",
+                planType: stripeSubscription.metadata?.planType || "inactive",
                 billingCycle: stripeSubscription.metadata?.billingCycle || "monthly",
                 status: stripeSubscription.status,
                 currentPeriodStart: stripeSubscription.current_period_start ? 
