@@ -58,18 +58,27 @@ initializeStripe();
 let firebaseInitialized = false;
 async function initializeFirebase() {
     try {
+        console.log('🔥 Starting Firebase initialization...');
+        
         // Check if Firebase is already initialized
         if (admin.apps.length === 0) {
+            console.log('🔥 No existing Firebase apps, initializing new one...');
+            
             // Get Firebase service account key from Azure Key Vault
+            console.log('🔥 Attempting to get Firebase service account from Azure Key Vault...');
             const firebaseServiceAccount = await getSecret('firebase-service-account');
             
             if (firebaseServiceAccount) {
+                console.log('🔥 Firebase service account found in Key Vault, parsing JSON...');
                 const serviceAccount = JSON.parse(firebaseServiceAccount);
+                console.log('🔥 Service account project ID:', serviceAccount.project_id);
+                
                 admin.initializeApp({
                     credential: admin.credential.cert(serviceAccount)
                 });
                 console.log('✅ Firebase Admin SDK initialized with Key Vault');
             } else {
+                console.log('🔥 No Firebase service account in Key Vault, trying environment variable...');
                 // Fallback to environment variable
                 const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT || '{}');
                 admin.initializeApp({
@@ -77,17 +86,25 @@ async function initializeFirebase() {
                 });
                 console.log('✅ Firebase Admin SDK initialized with environment variable');
             }
+        } else {
+            console.log('🔥 Firebase already initialized, skipping...');
         }
         firebaseInitialized = true;
+        console.log('✅ Firebase initialization completed successfully');
     } catch (error) {
         console.error('❌ Failed to initialize Firebase Admin SDK:', error);
+        console.error('❌ Error details:', error.message);
+        console.error('❌ Error stack:', error.stack);
+        
         // Try to initialize with default credentials
         try {
+            console.log('🔥 Trying to initialize with default credentials...');
             admin.initializeApp();
             firebaseInitialized = true;
             console.log('✅ Firebase Admin SDK initialized with default credentials');
         } catch (defaultError) {
             console.error('❌ Failed to initialize Firebase with default credentials:', defaultError);
+            console.error('❌ Default error details:', defaultError.message);
         }
     }
 }
@@ -721,8 +738,11 @@ app.get('/api/current-subscription', async (req, res) => {
         console.log('User ID length:', userId ? userId.length : 'null');
         
         // First, try to find subscription in Firebase (faster and more reliable)
-        console.log('Checking Firebase for subscription data first...');
+        console.log('🔥 Checking Firebase for subscription data first...');
         try {
+            console.log('🔥 Firebase initialized status:', firebaseInitialized);
+            console.log('🔥 Admin apps count:', admin.apps.length);
+            
             const subscriptionQuery = await admin.firestore()
                 .collection('subscriptions')
                 .where('userId', '==', userId)
@@ -730,15 +750,24 @@ app.get('/api/current-subscription', async (req, res) => {
                 .limit(1)
                 .get();
             
+            console.log('🔥 Firebase query completed, found', subscriptionQuery.docs.length, 'documents');
+            
             if (!subscriptionQuery.empty) {
                 const firebaseSub = subscriptionQuery.docs[0].data();
-                console.log('Found subscription in Firebase:', firebaseSub.id);
+                console.log('✅ Found subscription in Firebase:', firebaseSub.id);
+                console.log('✅ Subscription details:', {
+                    planType: firebaseSub.planType,
+                    status: firebaseSub.status,
+                    userId: firebaseSub.userId
+                });
                 return res.json(firebaseSub);
             } else {
-                console.log('No active subscription found in Firebase, checking Stripe...');
+                console.log('🔥 No active subscription found in Firebase, checking Stripe...');
             }
         } catch (firebaseError) {
-            console.log('Firebase lookup failed, falling back to Stripe:', firebaseError.message);
+            console.error('❌ Firebase lookup failed:', firebaseError);
+            console.error('❌ Firebase error details:', firebaseError.message);
+            console.error('❌ Firebase error stack:', firebaseError.stack);
         }
         
         // Try to find customer in Stripe by email or metadata
