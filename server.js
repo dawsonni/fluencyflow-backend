@@ -673,13 +673,33 @@ app.get('/api/current-subscription', async (req, res) => {
         console.log('User ID type:', typeof userId);
         console.log('User ID length:', userId ? userId.length : 'null');
         
+        // First, try to find subscription in Firebase (faster and more reliable)
+        console.log('Checking Firebase for subscription data first...');
+        try {
+            const subscriptionQuery = await admin.firestore()
+                .collection('subscriptions')
+                .where('userId', '==', userId)
+                .where('status', '==', 'active')
+                .limit(1)
+                .get();
+            
+            if (!subscriptionQuery.empty) {
+                const firebaseSub = subscriptionQuery.docs[0].data();
+                console.log('Found subscription in Firebase:', firebaseSub.id);
+                return res.json(firebaseSub);
+            } else {
+                console.log('No active subscription found in Firebase, checking Stripe...');
+            }
+        } catch (firebaseError) {
+            console.log('Firebase lookup failed, falling back to Stripe:', firebaseError.message);
+        }
+        
         // Try to find customer in Stripe by email or metadata
         // For now, we'll check if there are any active subscriptions
         // In a real implementation, you'd store the Stripe customer ID with the user
         
         try {
             // Get user email from Firebase first (more reliable than metadata lookup)
-            const admin = require('firebase-admin');
             let userEmail = null;
             
             let customer = null;
@@ -741,7 +761,29 @@ app.get('/api/current-subscription', async (req, res) => {
             
             if (subscriptions.data.length === 0) {
                 console.log('No active subscriptions found for customer:', customer.id);
-                return res.json(null); // No subscription - new users should be inactive
+                
+                // Fallback: Check Firebase for subscription data
+                console.log('Checking Firebase for subscription data...');
+                try {
+                    const subscriptionQuery = await admin.firestore()
+                        .collection('subscriptions')
+                        .where('userId', '==', userId)
+                        .where('status', '==', 'active')
+                        .limit(1)
+                        .get();
+                    
+                    if (!subscriptionQuery.empty) {
+                        const firebaseSub = subscriptionQuery.docs[0].data();
+                        console.log('Found subscription in Firebase:', firebaseSub.id);
+                        return res.json(firebaseSub);
+                    } else {
+                        console.log('No subscription found in Firebase either');
+                        return res.json(null);
+                    }
+                } catch (firebaseError) {
+                    console.log('Firebase lookup failed:', firebaseError.message);
+                    return res.json(null);
+                }
             }
             
             const stripeSubscription = subscriptions.data[0];
@@ -931,6 +973,22 @@ app.post('/api/cancel-subscription', async (req, res) => {
         });
         
         console.log('Subscription cancelled:', subscription.id);
+        
+        // Update Firebase subscription status
+        try {
+            const subscriptionId = `sub_${subscription.id}`;
+            await admin.firestore().collection('subscriptions').doc(subscriptionId).update({
+                status: subscription.status,
+                cancelAtPeriodEnd: subscription.cancel_at_period_end,
+                currentPeriodEnd: new Date(subscription.current_period_end * 1000).toISOString(),
+                updatedAt: new Date().toISOString()
+            });
+            console.log('Updated Firebase subscription status to cancelled');
+        } catch (firebaseError) {
+            console.log('Failed to update Firebase subscription:', firebaseError.message);
+            // Don't fail the cancellation if Firebase update fails
+        }
+        
         res.json({ 
             success: true, 
             subscription: {
@@ -1203,6 +1261,30 @@ app.post('/api/create-subscription', async (req, res) => {
                     new Date(stripeSubscription.updated * 1000).toISOString() : 
                     new Date().toISOString()
             };
+            
+            // Save subscription to Firebase
+            try {
+                const subscriptionId = `sub_${stripeSubscription.id}`;
+                await admin.firestore().collection('subscriptions').doc(subscriptionId).set({
+                    id: subscriptionId,
+                    userId: user_id,
+                    planType: plan_type,
+                    billingCycle: billing_cycle,
+                    status: stripeSubscription.status,
+                    stripeSubscriptionId: stripeSubscription.id,
+                    stripeCustomerId: customer.id,
+                    currentPeriodStart: subscription.currentPeriodStart,
+                    currentPeriodEnd: subscription.currentPeriodEnd,
+                    cancelAtPeriodEnd: subscription.cancelAtPeriodEnd,
+                    isTherapyReferral: is_therapy_referral,
+                    createdAt: subscription.createdAt,
+                    updatedAt: subscription.updatedAt
+                });
+                console.log('✅ Subscription saved to Firebase:', subscriptionId);
+            } catch (firebaseError) {
+                console.error('❌ Failed to save subscription to Firebase:', firebaseError);
+                // Don't fail the subscription creation if Firebase save fails
+            }
             
             res.json(subscription);
             
