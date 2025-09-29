@@ -4,6 +4,7 @@ const cors = require('cors');
 const { DefaultAzureCredential } = require('@azure/identity');
 const { SecretClient } = require('@azure/keyvault-secrets');
 const nodemailer = require('nodemailer');
+const admin = require('firebase-admin');
 
 // Initialize Azure Key Vault client
 const credential = new DefaultAzureCredential();
@@ -52,6 +53,47 @@ async function initializeStripe() {
 
 // Initialize Stripe
 initializeStripe();
+
+// Initialize Firebase Admin SDK
+let firebaseInitialized = false;
+async function initializeFirebase() {
+    try {
+        // Check if Firebase is already initialized
+        if (admin.apps.length === 0) {
+            // Get Firebase service account key from Azure Key Vault
+            const firebaseServiceAccount = await getSecret('firebase-service-account');
+            
+            if (firebaseServiceAccount) {
+                const serviceAccount = JSON.parse(firebaseServiceAccount);
+                admin.initializeApp({
+                    credential: admin.credential.cert(serviceAccount)
+                });
+                console.log('✅ Firebase Admin SDK initialized with Key Vault');
+            } else {
+                // Fallback to environment variable
+                const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT || '{}');
+                admin.initializeApp({
+                    credential: admin.credential.cert(serviceAccount)
+                });
+                console.log('✅ Firebase Admin SDK initialized with environment variable');
+            }
+        }
+        firebaseInitialized = true;
+    } catch (error) {
+        console.error('❌ Failed to initialize Firebase Admin SDK:', error);
+        // Try to initialize with default credentials
+        try {
+            admin.initializeApp();
+            firebaseInitialized = true;
+            console.log('✅ Firebase Admin SDK initialized with default credentials');
+        } catch (defaultError) {
+            console.error('❌ Failed to initialize Firebase with default credentials:', defaultError);
+        }
+    }
+}
+
+// Initialize Firebase
+initializeFirebase();
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -661,6 +703,11 @@ app.get('/api/verification-status/:token', async (req, res) => {
 // Get current subscription endpoint
 app.get('/api/current-subscription', async (req, res) => {
     try {
+        // Wait for Firebase to be initialized
+        while (!firebaseInitialized) {
+            await new Promise(resolve => setTimeout(resolve, 100));
+        }
+        
         // Get user ID from request headers or query params
         const userId = req.headers['user-id'] || req.query.userId;
         
@@ -1078,6 +1125,11 @@ app.post('/api/create-subscription', async (req, res) => {
     try {
         // Wait for Stripe to be initialized
         while (!stripeInitialized) {
+            await new Promise(resolve => setTimeout(resolve, 100));
+        }
+        
+        // Wait for Firebase to be initialized
+        while (!firebaseInitialized) {
             await new Promise(resolve => setTimeout(resolve, 100));
         }
         
