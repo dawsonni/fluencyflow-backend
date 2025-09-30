@@ -1083,6 +1083,53 @@ app.post('/api/cancel-subscription', async (req, res) => {
     }
 });
 
+// Reactivate subscription endpoint
+app.post('/api/reactivate-subscription', async (req, res) => {
+    try {
+        const { subscription_id } = req.body;
+        
+        console.log('Reactivating subscription:', subscription_id);
+        
+        // Reactivate the subscription by removing the cancel_at_period_end flag
+        const subscription = await stripe.subscriptions.update(subscription_id, {
+            cancel_at_period_end: false
+        });
+        
+        console.log('Subscription reactivated:', subscription.id);
+        
+        // Update Firebase subscription status
+        try {
+            const subscriptionId = `sub_${subscription.id}`;
+            await admin.firestore().collection('subscriptions').doc(subscriptionId).update({
+                status: subscription.status,
+                cancelAtPeriodEnd: subscription.cancel_at_period_end,
+                currentPeriodEnd: new Date(subscription.current_period_end * 1000).toISOString(),
+                updatedAt: new Date().toISOString()
+            });
+            console.log('Updated Firebase subscription status to reactivated');
+        } catch (firebaseError) {
+            console.log('Failed to update Firebase subscription:', firebaseError.message);
+            // Don't fail the reactivation if Firebase update fails
+        }
+        
+        res.json({ 
+            success: true, 
+            subscription: {
+                id: subscription.id,
+                status: subscription.status,
+                cancel_at_period_end: subscription.cancel_at_period_end,
+                current_period_end: subscription.current_period_end
+            }
+        });
+    } catch (error) {
+        console.error('Error reactivating subscription:', error);
+        res.status(500).json({ 
+            success: false, 
+            error: error.message 
+        });
+    }
+});
+
 // Create payment intent endpoint
 app.post('/api/create-payment-intent', async (req, res) => {
     try {
@@ -1214,6 +1261,52 @@ app.post('/api/create-subscription', async (req, res) => {
         } catch (customerError) {
             console.error('Error with customer:', customerError);
             return res.status(500).json({ error: 'Failed to create/find customer' });
+        }
+        
+        // Cancel any existing active subscriptions for this user before creating a new one
+        try {
+            console.log('Checking for existing active subscriptions for user:', user_id);
+            
+            // Find existing active subscriptions in Firebase
+            const existingSubscriptions = await admin.firestore()
+                .collection('subscriptions')
+                .where('userId', '==', user_id)
+                .where('status', '==', 'active')
+                .get();
+            
+            if (!existingSubscriptions.empty) {
+                console.log(`Found ${existingSubscriptions.docs.length} existing active subscriptions, canceling them...`);
+                
+                // Cancel each existing subscription in Stripe and update Firebase
+                for (const doc of existingSubscriptions.docs) {
+                    const existingSub = doc.data();
+                    console.log(`Canceling existing subscription: ${existingSub.stripeSubscriptionId}`);
+                    
+                    try {
+                        // Cancel in Stripe
+                        await stripe.subscriptions.update(existingSub.stripeSubscriptionId, {
+                            cancel_at_period_end: true
+                        });
+                        
+                        // Update in Firebase
+                        await doc.ref.update({
+                            status: 'canceled',
+                            cancelAtPeriodEnd: true,
+                            updatedAt: new Date().toISOString()
+                        });
+                        
+                        console.log(`✅ Canceled subscription: ${existingSub.stripeSubscriptionId}`);
+                    } catch (cancelError) {
+                        console.error(`❌ Failed to cancel subscription ${existingSub.stripeSubscriptionId}:`, cancelError);
+                        // Continue with new subscription creation even if cancellation fails
+                    }
+                }
+            } else {
+                console.log('No existing active subscriptions found');
+            }
+        } catch (existingSubError) {
+            console.error('Error handling existing subscriptions:', existingSubError);
+            // Continue with new subscription creation even if existing subscription handling fails
         }
         
         // Create subscription in Stripe
@@ -1652,6 +1745,11 @@ async function handleSubscriptionUpdated(subscription) {
         await admin.firestore().collection('subscriptions').doc(`sub_${subscription.id}`).update(subscriptionData);
         console.log('✅ Subscription updated in Firebase');
         
+        // If this subscription became active, ensure no other active subscriptions for this user
+        if (subscription.status === 'active') {
+            await ensureSingleActiveSubscription(subscription);
+        }
+        
         // Log status change for monitoring
         if (subscription.status === 'canceled') {
             console.log('🚨 Subscription canceled:', subscription.id);
@@ -1660,6 +1758,65 @@ async function handleSubscriptionUpdated(subscription) {
         }
     } catch (error) {
         console.error('❌ Error handling subscription updated:', error);
+    }
+}
+
+// Helper function to ensure only one active subscription per user
+async function ensureSingleActiveSubscription(activeSubscription) {
+    try {
+        // Get customer email to find userId
+        const customer = await stripe.customers.retrieve(activeSubscription.customer);
+        
+        // Find userId from customer email
+        const userQuery = await admin.firestore().collection('users')
+            .where('email', '==', customer.email)
+            .limit(1)
+            .get();
+        
+        if (userQuery.empty) {
+            console.log('⚠️ No user found for customer:', customer.email);
+            return;
+        }
+        
+        const userId = userQuery.docs[0].id;
+        
+        // Find all other active subscriptions for this user
+        const otherActiveSubscriptions = await admin.firestore()
+            .collection('subscriptions')
+            .where('userId', '==', userId)
+            .where('status', '==', 'active')
+            .where('stripeSubscriptionId', '!=', activeSubscription.id)
+            .get();
+        
+        if (!otherActiveSubscriptions.empty) {
+            console.log(`🔄 Found ${otherActiveSubscriptions.docs.length} other active subscriptions for user ${userId}, canceling them...`);
+            
+            // Cancel other active subscriptions
+            for (const doc of otherActiveSubscriptions.docs) {
+                const subData = doc.data();
+                console.log(`   Canceling duplicate subscription: ${subData.stripeSubscriptionId}`);
+                
+                try {
+                    // Cancel in Stripe
+                    await stripe.subscriptions.update(subData.stripeSubscriptionId, {
+                        cancel_at_period_end: true
+                    });
+                    
+                    // Update in Firebase
+                    await doc.ref.update({
+                        status: 'canceled',
+                        cancelAtPeriodEnd: true,
+                        updatedAt: new Date().toISOString()
+                    });
+                    
+                    console.log(`   ✅ Canceled duplicate: ${subData.stripeSubscriptionId}`);
+                } catch (cancelError) {
+                    console.error(`   ❌ Failed to cancel duplicate ${subData.stripeSubscriptionId}:`, cancelError);
+                }
+            }
+        }
+    } catch (error) {
+        console.error('❌ Error ensuring single active subscription:', error);
     }
 }
 
@@ -1751,6 +1908,8 @@ app.listen(PORT, () => {
     console.log(`💳 Payment intent: http://localhost:${PORT}/api/create-payment-intent`);
     console.log(`📋 Subscription: http://localhost:${PORT}/api/create-subscription`);
     console.log(`🔄 Modify Subscription: http://localhost:${PORT}/api/modify-subscription`);
+    console.log(`❌ Cancel Subscription: http://localhost:${PORT}/api/cancel-subscription`);
+    console.log(`🔄 Reactivate Subscription: http://localhost:${PORT}/api/reactivate-subscription`);
     console.log(`💳 Setup Intent: http://localhost:${PORT}/api/create-setup-intent`);
     console.log(`🔗 Stripe Webhook: http://localhost:${PORT}/api/stripe-webhook`);
 });
