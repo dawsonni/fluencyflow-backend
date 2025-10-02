@@ -1143,11 +1143,11 @@ app.post('/api/create-payment-intent', async (req, res) => {
         
         console.log('Creating payment intent:', { amount, currency, plan_type, billing_cycle, is_therapy_referral, user_email, promo_code });
         
-        // Convert amount from cents to dollars for calculation
+        // Convert amount from cents to dollars for display
         const amountInDollars = amount / 100;
-        let validatedAmount = amountInDollars;
         let couponId = null;
         
+        // Validate promo code exists but don't apply discount here
         if (promo_code) {
             try {
                 // Retrieve the promotion code from Stripe
@@ -1167,18 +1167,7 @@ app.post('/api/create-payment-intent', async (req, res) => {
                 const promotionCode = promotionCodes.data[0];
                 couponId = promotionCode.coupon.id;
                 
-                // Calculate discount based on coupon type
-                if (promotionCode.coupon.percent_off) {
-                    // Percentage discount
-                    const discount = amountInDollars * (promotionCode.coupon.percent_off / 100);
-                    validatedAmount = Math.max(0, amountInDollars - discount);
-                } else if (promotionCode.coupon.amount_off) {
-                    // Fixed amount discount
-                    const discount = promotionCode.coupon.amount_off / 100; // Convert from cents
-                    validatedAmount = Math.max(0, amountInDollars - discount);
-                }
-                
-                console.log(`Stripe promo code ${promo_code} applied: coupon ${couponId}, final amount: ${validatedAmount}`);
+                console.log(`Stripe promo code ${promo_code} validated: coupon ${couponId}`);
                 
             } catch (stripeError) {
                 console.error('Error validating promo code with Stripe:', stripeError);
@@ -1219,7 +1208,7 @@ app.post('/api/create-payment-intent', async (req, res) => {
         }
         
         const paymentIntent = await stripe.paymentIntents.create({
-            amount: Math.round(validatedAmount * 100), // Convert to cents
+            amount: amount, // Use original amount in cents (no discount applied here)
             currency: currency,
             customer: customer?.id,
             setup_future_usage: 'off_session', // This will save the payment method for future use
@@ -1229,7 +1218,6 @@ app.post('/api/create-payment-intent', async (req, res) => {
                 is_therapy_referral: is_therapy_referral.toString(),
                 promo_code: promo_code || '',
                 original_amount: amountInDollars.toString(),
-                final_amount: validatedAmount.toString(),
                 coupon_id: couponId || ''
             }
         });
