@@ -33,88 +33,6 @@ function getProductId(planType) {
     return productMapping[planType] || 'prod_T7bU5ypppEYoVr';
 }
 
-// Promo code validation function
-function validatePromoCode(code, originalAmount) {
-    const upperCode = code.toUpperCase().trim();
-    
-    // Define available promo codes (should match the iOS app)
-    const promoCodes = {
-        'SCHOOL25': {
-            type: 'percentage',
-            value: 25,
-            description: '25% off for schools and educational institutions',
-            isActive: true,
-            expirationDate: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000), // 1 year from now
-            usageLimit: 1000,
-            usageCount: 0
-        },
-        'WELCOME10': {
-            type: 'percentage',
-            value: 10,
-            description: '10% off for new users',
-            isActive: true,
-            expirationDate: new Date(Date.now() + 90 * 24 * 60 * 60 * 1000), // 3 months from now
-            usageLimit: 500,
-            usageCount: 0
-        },
-        'SAVE50': {
-            type: 'fixed',
-            value: 50,
-            description: '$50 off your subscription',
-            isActive: true,
-            expirationDate: new Date(Date.now() + 180 * 24 * 60 * 60 * 1000), // 6 months from now
-            usageLimit: 100,
-            usageCount: 0
-        }
-    };
-    
-    const promoCode = promoCodes[upperCode];
-    
-    if (!promoCode) {
-        return {
-            valid: false,
-            error: 'Invalid promo code. Please check your code and try again.'
-        };
-    }
-    
-    if (!promoCode.isActive) {
-        return {
-            valid: false,
-            error: 'This promo code is no longer active.'
-        };
-    }
-    
-    if (Date.now() > promoCode.expirationDate.getTime()) {
-        return {
-            valid: false,
-            error: 'This promo code has expired.'
-        };
-    }
-    
-    if (promoCode.usageCount >= promoCode.usageLimit) {
-        return {
-            valid: false,
-            error: 'This promo code has reached its usage limit.'
-        };
-    }
-    
-    // Calculate discount
-    let discount = 0;
-    if (promoCode.type === 'percentage') {
-        discount = originalAmount * (promoCode.value / 100);
-    } else if (promoCode.type === 'fixed') {
-        discount = Math.min(promoCode.value, originalAmount); // Don't discount more than the price
-    }
-    
-    const finalAmount = Math.max(0, originalAmount - discount);
-    
-    return {
-        valid: true,
-        discount: discount,
-        finalAmount: finalAmount,
-        promoCode: promoCode
-    };
-}
 
 // Initialize Stripe with Key Vault
 let stripe;
@@ -1225,17 +1143,47 @@ app.post('/api/create-payment-intent', async (req, res) => {
         
         console.log('Creating payment intent:', { amount, currency, plan_type, billing_cycle, is_therapy_referral, user_email, promo_code });
         
-        // Validate promo code if provided
+        // Validate promo code using Stripe if provided
         let validatedAmount = amount;
+        let couponId = null;
+        
         if (promo_code) {
-            const promoValidation = validatePromoCode(promo_code, amount);
-            if (promoValidation.valid) {
-                validatedAmount = promoValidation.finalAmount;
-                console.log(`Promo code ${promo_code} applied: ${promoValidation.discount} off, final amount: ${validatedAmount}`);
-            } else {
+            try {
+                // Retrieve the promotion code from Stripe
+                const promotionCodes = await stripe.promotionCodes.list({
+                    code: promo_code,
+                    active: true,
+                    limit: 1
+                });
+                
+                if (promotionCodes.data.length === 0) {
+                    return res.status(400).json({ 
+                        error: 'Invalid promo code',
+                        details: 'Promo code not found or inactive'
+                    });
+                }
+                
+                const promotionCode = promotionCodes.data[0];
+                couponId = promotionCode.coupon.id;
+                
+                // Calculate discount based on coupon type
+                if (promotionCode.coupon.percent_off) {
+                    // Percentage discount
+                    const discount = amount * (promotionCode.coupon.percent_off / 100);
+                    validatedAmount = Math.max(0, amount - discount);
+                } else if (promotionCode.coupon.amount_off) {
+                    // Fixed amount discount
+                    const discount = promotionCode.coupon.amount_off / 100; // Convert from cents
+                    validatedAmount = Math.max(0, amount - discount);
+                }
+                
+                console.log(`Stripe promo code ${promo_code} applied: coupon ${couponId}, final amount: ${validatedAmount}`);
+                
+            } catch (stripeError) {
+                console.error('Error validating promo code with Stripe:', stripeError);
                 return res.status(400).json({ 
                     error: 'Invalid promo code',
-                    details: promoValidation.error 
+                    details: 'Failed to validate promo code'
                 });
             }
         }
@@ -1269,7 +1217,7 @@ app.post('/api/create-payment-intent', async (req, res) => {
             }
         }
         
-        const paymentIntent = await stripe.paymentIntents.create({
+        const paymentIntentData = {
             amount: Math.round(validatedAmount * 100), // Convert to cents
             currency: currency,
             customer: customer?.id,
@@ -1282,7 +1230,16 @@ app.post('/api/create-payment-intent', async (req, res) => {
                 original_amount: amount.toString(),
                 final_amount: validatedAmount.toString()
             }
-        });
+        };
+        
+        // Add coupon if promo code was applied
+        if (couponId) {
+            paymentIntentData.discounts = [{
+                coupon: couponId
+            }];
+        }
+        
+        const paymentIntent = await stripe.paymentIntents.create(paymentIntentData);
         
         res.json({
             id: paymentIntent.id,
