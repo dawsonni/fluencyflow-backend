@@ -1143,8 +1143,9 @@ app.post('/api/create-payment-intent', async (req, res) => {
         
         console.log('Creating payment intent:', { amount, currency, plan_type, billing_cycle, is_therapy_referral, user_email, promo_code });
         
-        // Validate promo code using Stripe if provided
-        let validatedAmount = amount;
+        // Convert amount from cents to dollars for calculation
+        const amountInDollars = amount / 100;
+        let validatedAmount = amountInDollars;
         let couponId = null;
         
         if (promo_code) {
@@ -1169,12 +1170,12 @@ app.post('/api/create-payment-intent', async (req, res) => {
                 // Calculate discount based on coupon type
                 if (promotionCode.coupon.percent_off) {
                     // Percentage discount
-                    const discount = amount * (promotionCode.coupon.percent_off / 100);
-                    validatedAmount = Math.max(0, amount - discount);
+                    const discount = amountInDollars * (promotionCode.coupon.percent_off / 100);
+                    validatedAmount = Math.max(0, amountInDollars - discount);
                 } else if (promotionCode.coupon.amount_off) {
                     // Fixed amount discount
                     const discount = promotionCode.coupon.amount_off / 100; // Convert from cents
-                    validatedAmount = Math.max(0, amount - discount);
+                    validatedAmount = Math.max(0, amountInDollars - discount);
                 }
                 
                 console.log(`Stripe promo code ${promo_code} applied: coupon ${couponId}, final amount: ${validatedAmount}`);
@@ -1227,7 +1228,7 @@ app.post('/api/create-payment-intent', async (req, res) => {
                 billing_cycle,
                 is_therapy_referral: is_therapy_referral.toString(),
                 promo_code: promo_code || '',
-                original_amount: amount.toString(),
+                original_amount: amountInDollars.toString(),
                 final_amount: validatedAmount.toString(),
                 coupon_id: couponId || ''
             }
