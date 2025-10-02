@@ -1561,7 +1561,7 @@ app.post('/api/modify-subscription', async (req, res) => {
             await new Promise(resolve => setTimeout(resolve, 100));
         }
         
-        const { plan_type, billing_cycle, user_id, user_email, price_id, product_id } = req.body;
+        const { plan_type, billing_cycle, user_id, user_email, price_id, product_id, promo_code } = req.body;
         
         console.log('Modifying subscription:', { plan_type, billing_cycle, user_id, user_email, price_id });
         
@@ -1633,7 +1633,7 @@ app.post('/api/modify-subscription', async (req, res) => {
         
         // Update the subscription with the new plan
         try {
-            const updatedSubscription = await stripe.subscriptions.update(existingSubscription.id, {
+            const updateData = {
                 items: [{
                     id: existingSubscription.items.data[0].id,
                     price: newPriceId,
@@ -1644,9 +1644,32 @@ app.post('/api/modify-subscription', async (req, res) => {
                     billing_cycle: billing_cycle,
                     product_id: product_id || getProductId(plan_type),
                     is_therapy_referral: 'false',
-                    modified_at: new Date().toISOString()
+                    modified_at: new Date().toISOString(),
+                    promo_code: promo_code || ''
                 }
-            });
+            };
+            
+            // Add coupon if promo code was provided
+            if (promo_code) {
+                try {
+                    // Get the promotion code to find the coupon
+                    const promotionCodes = await stripe.promotionCodes.list({
+                        code: promo_code,
+                        active: true,
+                        limit: 1
+                    });
+                    
+                    if (promotionCodes.data.length > 0) {
+                        updateData.coupon = promotionCodes.data[0].coupon.id;
+                        console.log(`Applying coupon ${updateData.coupon} to subscription modification`);
+                    }
+                } catch (couponError) {
+                    console.error('Error applying coupon to subscription modification:', couponError);
+                    // Continue without coupon if there's an error
+                }
+            }
+            
+            const updatedSubscription = await stripe.subscriptions.update(existingSubscription.id, updateData);
             
             console.log('Subscription updated successfully:', updatedSubscription.id);
             
