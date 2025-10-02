@@ -33,6 +33,89 @@ function getProductId(planType) {
     return productMapping[planType] || 'prod_T7bU5ypppEYoVr';
 }
 
+// Promo code validation function
+function validatePromoCode(code, originalAmount) {
+    const upperCode = code.toUpperCase().trim();
+    
+    // Define available promo codes (should match the iOS app)
+    const promoCodes = {
+        'SCHOOL25': {
+            type: 'percentage',
+            value: 25,
+            description: '25% off for schools and educational institutions',
+            isActive: true,
+            expirationDate: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000), // 1 year from now
+            usageLimit: 1000,
+            usageCount: 0
+        },
+        'WELCOME10': {
+            type: 'percentage',
+            value: 10,
+            description: '10% off for new users',
+            isActive: true,
+            expirationDate: new Date(Date.now() + 90 * 24 * 60 * 60 * 1000), // 3 months from now
+            usageLimit: 500,
+            usageCount: 0
+        },
+        'SAVE50': {
+            type: 'fixed',
+            value: 50,
+            description: '$50 off your subscription',
+            isActive: true,
+            expirationDate: new Date(Date.now() + 180 * 24 * 60 * 60 * 1000), // 6 months from now
+            usageLimit: 100,
+            usageCount: 0
+        }
+    };
+    
+    const promoCode = promoCodes[upperCode];
+    
+    if (!promoCode) {
+        return {
+            valid: false,
+            error: 'Invalid promo code. Please check your code and try again.'
+        };
+    }
+    
+    if (!promoCode.isActive) {
+        return {
+            valid: false,
+            error: 'This promo code is no longer active.'
+        };
+    }
+    
+    if (Date.now() > promoCode.expirationDate.getTime()) {
+        return {
+            valid: false,
+            error: 'This promo code has expired.'
+        };
+    }
+    
+    if (promoCode.usageCount >= promoCode.usageLimit) {
+        return {
+            valid: false,
+            error: 'This promo code has reached its usage limit.'
+        };
+    }
+    
+    // Calculate discount
+    let discount = 0;
+    if (promoCode.type === 'percentage') {
+        discount = originalAmount * (promoCode.value / 100);
+    } else if (promoCode.type === 'fixed') {
+        discount = Math.min(promoCode.value, originalAmount); // Don't discount more than the price
+    }
+    
+    const finalAmount = Math.max(0, originalAmount - discount);
+    
+    return {
+        valid: true,
+        discount: discount,
+        finalAmount: finalAmount,
+        promoCode: promoCode
+    };
+}
+
 // Initialize Stripe with Key Vault
 let stripe;
 let stripeInitialized = false;
@@ -1138,9 +1221,24 @@ app.post('/api/create-payment-intent', async (req, res) => {
             await new Promise(resolve => setTimeout(resolve, 100));
         }
         
-        const { amount, currency, plan_type, billing_cycle, is_therapy_referral, user_email } = req.body;
+        const { amount, currency, plan_type, billing_cycle, is_therapy_referral, user_email, promo_code } = req.body;
         
-        console.log('Creating payment intent:', { amount, currency, plan_type, billing_cycle, is_therapy_referral, user_email });
+        console.log('Creating payment intent:', { amount, currency, plan_type, billing_cycle, is_therapy_referral, user_email, promo_code });
+        
+        // Validate promo code if provided
+        let validatedAmount = amount;
+        if (promo_code) {
+            const promoValidation = validatePromoCode(promo_code, amount);
+            if (promoValidation.valid) {
+                validatedAmount = promoValidation.finalAmount;
+                console.log(`Promo code ${promo_code} applied: ${promoValidation.discount} off, final amount: ${validatedAmount}`);
+            } else {
+                return res.status(400).json({ 
+                    error: 'Invalid promo code',
+                    details: promoValidation.error 
+                });
+            }
+        }
         
         // Create or find customer for this payment intent
         let customer;
@@ -1172,14 +1270,17 @@ app.post('/api/create-payment-intent', async (req, res) => {
         }
         
         const paymentIntent = await stripe.paymentIntents.create({
-            amount: amount,
+            amount: Math.round(validatedAmount * 100), // Convert to cents
             currency: currency,
             customer: customer?.id,
             setup_future_usage: 'off_session', // This will save the payment method for future use
             metadata: {
                 plan_type,
                 billing_cycle,
-                is_therapy_referral: is_therapy_referral.toString()
+                is_therapy_referral: is_therapy_referral.toString(),
+                promo_code: promo_code || '',
+                original_amount: amount.toString(),
+                final_amount: validatedAmount.toString()
             }
         });
         
