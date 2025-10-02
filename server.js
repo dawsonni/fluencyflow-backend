@@ -1217,7 +1217,7 @@ app.post('/api/create-payment-intent', async (req, res) => {
             }
         }
         
-        const paymentIntentData = {
+        const paymentIntent = await stripe.paymentIntents.create({
             amount: Math.round(validatedAmount * 100), // Convert to cents
             currency: currency,
             customer: customer?.id,
@@ -1228,18 +1228,10 @@ app.post('/api/create-payment-intent', async (req, res) => {
                 is_therapy_referral: is_therapy_referral.toString(),
                 promo_code: promo_code || '',
                 original_amount: amount.toString(),
-                final_amount: validatedAmount.toString()
+                final_amount: validatedAmount.toString(),
+                coupon_id: couponId || ''
             }
-        };
-        
-        // Add coupon if promo code was applied
-        if (couponId) {
-            paymentIntentData.discounts = [{
-                coupon: couponId
-            }];
-        }
-        
-        const paymentIntent = await stripe.paymentIntents.create(paymentIntentData);
+        });
         
         res.json({
             id: paymentIntent.id,
@@ -1267,7 +1259,7 @@ app.post('/api/create-subscription', async (req, res) => {
             await new Promise(resolve => setTimeout(resolve, 100));
         }
         
-        const { plan_type, billing_cycle, is_therapy_referral, user_id, user_email, payment_intent_id, price_id, product_id } = req.body;
+        const { plan_type, billing_cycle, is_therapy_referral, user_id, user_email, payment_intent_id, price_id, product_id, promo_code } = req.body;
         
         console.log('Creating subscription:', { plan_type, billing_cycle, is_therapy_referral, user_id, user_email, payment_intent_id });
         
@@ -1439,7 +1431,7 @@ app.post('/api/create-subscription', async (req, res) => {
                 defaultPaymentMethodId: customerWithPaymentMethods.invoice_settings?.default_payment_method?.id
             });
             
-            const stripeSubscription = await stripe.subscriptions.create({
+            const subscriptionData = {
                 customer: customer.id,
                 items: [{
                     price: priceId,
@@ -1448,9 +1440,32 @@ app.post('/api/create-subscription', async (req, res) => {
                     userId: user_id,
                     planType: plan_type,
                     billingCycle: billing_cycle,
-                    isTherapyReferral: is_therapy_referral.toString()
+                    isTherapyReferral: is_therapy_referral.toString(),
+                    promo_code: promo_code || ''
                 }
-            });
+            };
+            
+            // Add coupon if promo code was provided
+            if (promo_code) {
+                try {
+                    // Get the promotion code to find the coupon
+                    const promotionCodes = await stripe.promotionCodes.list({
+                        code: promo_code,
+                        active: true,
+                        limit: 1
+                    });
+                    
+                    if (promotionCodes.data.length > 0) {
+                        subscriptionData.coupon = promotionCodes.data[0].coupon.id;
+                        console.log(`Applying coupon ${subscriptionData.coupon} to subscription`);
+                    }
+                } catch (couponError) {
+                    console.error('Error applying coupon to subscription:', couponError);
+                    // Continue without coupon if there's an error
+                }
+            }
+            
+            const stripeSubscription = await stripe.subscriptions.create(subscriptionData);
             
             console.log('Stripe subscription created successfully:', stripeSubscription.id);
             console.log('Subscription status:', stripeSubscription.status);
