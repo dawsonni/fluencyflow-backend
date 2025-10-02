@@ -1143,11 +1143,12 @@ app.post('/api/create-payment-intent', async (req, res) => {
         
         console.log('Creating payment intent:', { amount, currency, plan_type, billing_cycle, is_therapy_referral, user_email, promo_code });
         
-        // Convert amount from cents to dollars for display
+        // Convert amount from cents to dollars for calculation
         const amountInDollars = amount / 100;
+        let validatedAmount = amountInDollars;
         let couponId = null;
         
-        // Validate promo code exists but don't apply discount here
+        // Calculate discount for display but don't apply to payment intent
         if (promo_code) {
             try {
                 // Retrieve the promotion code from Stripe
@@ -1167,7 +1168,18 @@ app.post('/api/create-payment-intent', async (req, res) => {
                 const promotionCode = promotionCodes.data[0];
                 couponId = promotionCode.coupon.id;
                 
-                console.log(`Stripe promo code ${promo_code} validated: coupon ${couponId}`);
+                // Calculate discount for display purposes
+                if (promotionCode.coupon.percent_off) {
+                    // Percentage discount
+                    const discount = amountInDollars * (promotionCode.coupon.percent_off / 100);
+                    validatedAmount = Math.max(0, amountInDollars - discount);
+                } else if (promotionCode.coupon.amount_off) {
+                    // Fixed amount discount
+                    const discount = promotionCode.coupon.amount_off / 100; // Convert from cents
+                    validatedAmount = Math.max(0, amountInDollars - discount);
+                }
+                
+                console.log(`Stripe promo code ${promo_code} validated: coupon ${couponId}, display amount: ${validatedAmount}`);
                 
             } catch (stripeError) {
                 console.error('Error validating promo code with Stripe:', stripeError);
@@ -1225,7 +1237,7 @@ app.post('/api/create-payment-intent', async (req, res) => {
         res.json({
             id: paymentIntent.id,
             client_secret: paymentIntent.client_secret,
-            amount: paymentIntent.amount,
+            amount: Math.round(validatedAmount * 100), // Return discounted amount in cents for display
             currency: paymentIntent.currency
         });
         
