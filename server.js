@@ -1529,6 +1529,31 @@ app.post('/api/create-subscription', async (req, res) => {
                     updatedAt: subscription.updatedAt
                 });
                 console.log('✅ Subscription saved to Firebase:', subscriptionId);
+                
+                // Create financial record for tax compliance
+                try {
+                    // Get amount from Stripe subscription
+                    const amount = stripeSubscription.items.data[0]?.price?.unit_amount / 100 || 0; // Convert cents to dollars
+                    
+                    await createFinancialRecord({
+                        userId: user_id,
+                        userEmail: user_email,
+                        userName: null, // We don't have user name in this endpoint
+                        stripeSubscriptionId: stripeSubscription.id,
+                        stripeCustomerId: customer.id,
+                        planType: plan_type,
+                        billingCycle: billing_cycle,
+                        amount: amount,
+                        startDate: subscription.currentPeriodStart,
+                        endDate: subscription.currentPeriodEnd,
+                        status: stripeSubscription.status,
+                        isTherapyReferral: is_therapy_referral,
+                        promoCode: promo_code || null
+                    });
+                } catch (financialError) {
+                    console.error('❌ Failed to create financial record:', financialError);
+                    // Continue even if financial record fails
+                }
             } catch (firebaseError) {
                 console.error('❌ Failed to save subscription to Firebase:', firebaseError);
                 // Don't fail the subscription creation if Firebase save fails
@@ -1768,6 +1793,138 @@ app.post('/api/stripe-webhook', express.raw({type: 'application/json'}), async (
     }
 });
 
+// MARK: - Financial Records for Tax Compliance
+
+/**
+ * Create a financial record for tax compliance
+ * This record is kept for 7 years even if user deletes their account (anonymized)
+ */
+async function createFinancialRecord(subscriptionData) {
+    try {
+        const recordId = `fin_${Date.now()}_${Math.random().toString(36).substring(7)}`;
+        const lastTransactionDate = new Date();
+        const retainUntil = new Date(lastTransactionDate);
+        retainUntil.setFullYear(retainUntil.getFullYear() + 7); // 7 years from now
+        
+        const financialRecord = {
+            recordId: recordId,
+            userId: subscriptionData.userId,
+            userEmail: subscriptionData.userEmail || null,
+            userName: subscriptionData.userName || null,
+            
+            // Subscription/Revenue Data
+            subscriptionId: subscriptionData.stripeSubscriptionId,
+            stripeCustomerId: subscriptionData.stripeCustomerId || null,
+            planType: subscriptionData.planType,
+            billingCycle: subscriptionData.billingCycle,
+            amount: subscriptionData.amount || 0,
+            currency: 'usd',
+            startDate: subscriptionData.startDate,
+            endDate: subscriptionData.endDate,
+            lastTransactionDate: lastTransactionDate.toISOString(),
+            
+            // Status
+            status: subscriptionData.status || 'active',
+            isTherapyReferral: subscriptionData.isTherapyReferral || false,
+            promoCode: subscriptionData.promoCode || null,
+            
+            // Deletion Tracking
+            isAnonymized: false,
+            anonymizedAt: null,
+            retainUntil: retainUntil.toISOString(),
+            
+            // Audit Trail
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString()
+        };
+        
+        await admin.firestore().collection('financial_records').doc(recordId).set(financialRecord);
+        console.log('✅ Financial record created:', recordId);
+        
+        return recordId;
+    } catch (error) {
+        console.error('❌ Error creating financial record:', error);
+        // Don't fail subscription creation if financial record fails
+        return null;
+    }
+}
+
+/**
+ * Anonymize financial records when user deletes account
+ * Keeps revenue data for tax compliance but removes PII
+ */
+async function anonymizeFinancialRecords(userId) {
+    try {
+        console.log('🔒 Anonymizing financial records for user:', userId);
+        
+        const financialRecords = await admin.firestore()
+            .collection('financial_records')
+            .where('userId', '==', userId)
+            .where('isAnonymized', '==', false)
+            .get();
+        
+        if (financialRecords.empty) {
+            console.log('ℹ️ No financial records to anonymize');
+            return;
+        }
+        
+        const batch = admin.firestore().batch();
+        for (const doc of financialRecords.docs) {
+            batch.update(doc.ref, {
+                userId: '[DELETED]',
+                userEmail: '[DELETED]',
+                userName: '[DELETED]',
+                stripeCustomerId: '[DELETED]',  // Don't need this after deletion
+                isAnonymized: true,
+                anonymizedAt: new Date().toISOString(),
+                updatedAt: new Date().toISOString()
+            });
+        }
+        
+        await batch.commit();
+        console.log(`✅ Anonymized ${financialRecords.docs.length} financial records`);
+        
+    } catch (error) {
+        console.error('❌ Error anonymizing financial records:', error);
+        throw error;
+    }
+}
+
+/**
+ * Clean up expired financial records (7+ years old)
+ * Should be run periodically (monthly cron job)
+ */
+async function cleanupExpiredFinancialRecords() {
+    try {
+        console.log('🧹 Cleaning up expired financial records...');
+        
+        const now = new Date();
+        const expiredRecords = await admin.firestore()
+            .collection('financial_records')
+            .where('retainUntil', '<', now.toISOString())
+            .get();
+        
+        if (expiredRecords.empty) {
+            console.log('ℹ️ No expired financial records to clean up');
+            return { deleted: 0 };
+        }
+        
+        const batch = admin.firestore().batch();
+        for (const doc of expiredRecords.docs) {
+            batch.delete(doc.ref);
+        }
+        
+        await batch.commit();
+        console.log(`✅ Deleted ${expiredRecords.docs.length} expired financial records`);
+        
+        return { deleted: expiredRecords.docs.length };
+        
+    } catch (error) {
+        console.error('❌ Error cleaning up expired financial records:', error);
+        throw error;
+    }
+}
+
 // Webhook Event Handlers
 async function handleSubscriptionCreated(subscription) {
     console.log('📋 Subscription created:', subscription.id);
@@ -1808,6 +1965,31 @@ async function handleSubscriptionCreated(subscription) {
         
         await admin.firestore().collection('subscriptions').doc(`sub_${subscription.id}`).set(subscriptionData);
         console.log('✅ Subscription created in Firebase');
+        
+        // Create financial record for tax compliance
+        try {
+            const customer = await stripe.customers.retrieve(subscription.customer);
+            const amount = subscription.items.data[0]?.price?.unit_amount / 100 || 0;
+            
+            await createFinancialRecord({
+                userId: userId,
+                userEmail: customer.email,
+                userName: null,
+                stripeSubscriptionId: subscription.id,
+                stripeCustomerId: subscription.customer,
+                planType: subscription.metadata?.planType || 'unknown',
+                billingCycle: subscription.metadata?.billingCycle || 'monthly',
+                amount: amount,
+                startDate: new Date(subscription.current_period_start * 1000).toISOString(),
+                endDate: new Date(subscription.current_period_end * 1000).toISOString(),
+                status: subscription.status,
+                isTherapyReferral: subscription.metadata?.isTherapyReferral === 'true' || false,
+                promoCode: subscription.metadata?.promo_code || null
+            });
+            console.log('✅ Financial record created from webhook');
+        } catch (financialError) {
+            console.error('❌ Failed to create financial record from webhook:', financialError);
+        }
     } catch (error) {
         console.error('❌ Error handling subscription created:', error);
     }
@@ -1997,6 +2179,161 @@ async function handleInvoicePaymentFailed(invoice) {
     }
 }
 
+// Delete user account endpoint
+app.post('/api/delete-account', async (req, res) => {
+    try {
+        // Wait for Firebase to be initialized
+        while (!firebaseInitialized) {
+            await new Promise(resolve => setTimeout(resolve, 100));
+        }
+        
+        const { user_id } = req.body;
+        
+        if (!user_id) {
+            return res.status(400).json({ error: 'User ID is required' });
+        }
+        
+        console.log('🗑️ Deleting account for user:', user_id);
+        
+        // 1. Anonymize financial records (keep for 7 years, but remove PII)
+        try {
+            await anonymizeFinancialRecords(user_id);
+            console.log('✅ Financial records anonymized');
+        } catch (financialError) {
+            console.error('❌ Failed to anonymize financial records:', financialError);
+            // Continue with deletion even if anonymization fails
+        }
+        
+        // 2. Cancel any active subscriptions in Stripe
+        try {
+            const subscriptionDocs = await admin.firestore()
+                .collection('subscriptions')
+                .where('userId', '==', user_id)
+                .where('status', '==', 'active')
+                .get();
+            
+            for (const doc of subscriptionDocs.docs) {
+                const subData = doc.data();
+                if (subData.stripeSubscriptionId && !subData.stripeSubscriptionId.includes('mock')) {
+                    try {
+                        await stripe.subscriptions.cancel(subData.stripeSubscriptionId);
+                        console.log('✅ Cancelled Stripe subscription:', subData.stripeSubscriptionId);
+                    } catch (stripeError) {
+                        console.error('❌ Failed to cancel subscription:', stripeError);
+                    }
+                }
+            }
+        } catch (cancelError) {
+            console.error('❌ Error cancelling subscriptions:', cancelError);
+        }
+        
+        // 3. Delete user data from Firebase collections
+        // NOTE: The iOS app handles Firebase Auth deletion and local file cleanup
+        // This endpoint only handles Firestore data deletion
+        
+        const batch = admin.firestore().batch();
+        
+        // Delete subscriptions
+        const subsSnapshot = await admin.firestore()
+            .collection('subscriptions')
+            .where('userId', '==', user_id)
+            .get();
+        subsSnapshot.docs.forEach(doc => batch.delete(doc.ref));
+        
+        // Delete practice sessions
+        const sessionsSnapshot = await admin.firestore()
+            .collection('practice_sessions')
+            .where('userId', '==', user_id)
+            .get();
+        sessionsSnapshot.docs.forEach(doc => batch.delete(doc.ref));
+        
+        // Delete custom personas
+        const personasSnapshot = await admin.firestore()
+            .collection('custom_personas')
+            .where('userId', '==', user_id)
+            .get();
+        personasSnapshot.docs.forEach(doc => batch.delete(doc.ref));
+        
+        // Delete user activity
+        const activitySnapshot = await admin.firestore()
+            .collection('user_activity')
+            .where('userId', '==', user_id)
+            .get();
+        activitySnapshot.docs.forEach(doc => batch.delete(doc.ref));
+        
+        // Commit batch deletions
+        await batch.commit();
+        console.log('✅ Deleted Firestore data for user:', user_id);
+        
+        // 4. Delete usage tracking data
+        try {
+            const monthlyUsage = await admin.firestore()
+                .collection('usage')
+                .doc(user_id)
+                .collection('monthly')
+                .get();
+            
+            const usageBatch = admin.firestore().batch();
+            monthlyUsage.docs.forEach(doc => usageBatch.delete(doc.ref));
+            await usageBatch.commit();
+            
+            await admin.firestore().collection('usage').doc(user_id).delete();
+            console.log('✅ Deleted usage tracking data');
+        } catch (usageError) {
+            console.error('❌ Error deleting usage data:', usageError);
+        }
+        
+        // 5. Delete user document (last)
+        try {
+            await admin.firestore().collection('users').doc(user_id).delete();
+            console.log('✅ Deleted user document');
+        } catch (userError) {
+            console.error('❌ Error deleting user document:', userError);
+        }
+        
+        console.log('✅✅✅ Account deletion completed for user:', user_id);
+        
+        res.json({ 
+            success: true, 
+            message: 'Account deleted successfully. Anonymized financial records retained for 7 years for tax compliance.' 
+        });
+        
+    } catch (error) {
+        console.error('❌ Error deleting account:', error);
+        res.status(500).json({ 
+            success: false, 
+            error: error.message 
+        });
+    }
+});
+
+// Cleanup expired financial records endpoint (for cron jobs)
+app.post('/api/cleanup-financial-records', async (req, res) => {
+    try {
+        // Wait for Firebase to be initialized
+        while (!firebaseInitialized) {
+            await new Promise(resolve => setTimeout(resolve, 100));
+        }
+        
+        // Optional: Add authentication check here to ensure only admins can trigger cleanup
+        
+        const result = await cleanupExpiredFinancialRecords();
+        
+        res.json({ 
+            success: true, 
+            deleted: result.deleted,
+            message: `Cleaned up ${result.deleted} expired financial records` 
+        });
+        
+    } catch (error) {
+        console.error('❌ Error in cleanup endpoint:', error);
+        res.status(500).json({ 
+            success: false, 
+            error: error.message 
+        });
+    }
+});
+
 // Start server
 app.listen(PORT, () => {
     console.log(`🚀 FluencyFlow backend server running on port ${PORT}`);
@@ -2009,4 +2346,6 @@ app.listen(PORT, () => {
     console.log(`🔄 Reactivate Subscription: http://localhost:${PORT}/api/reactivate-subscription`);
     console.log(`💳 Setup Intent: http://localhost:${PORT}/api/create-setup-intent`);
     console.log(`🔗 Stripe Webhook: http://localhost:${PORT}/api/stripe-webhook`);
+    console.log(`🗑️ Delete Account: http://localhost:${PORT}/api/delete-account`);
+    console.log(`🧹 Cleanup Financial Records: http://localhost:${PORT}/api/cleanup-financial-records`);
 });
