@@ -1666,12 +1666,12 @@ app.post('/api/modify-subscription', async (req, res) => {
                 }],
                 proration_behavior: 'create_prorations', // This handles proration automatically
                 metadata: {
-                    plan_type: plan_type,
-                    billing_cycle: billing_cycle,
-                    product_id: product_id || getProductId(plan_type),
-                    is_therapy_referral: 'false',
-                    modified_at: new Date().toISOString(),
-                    promo_code: promo_code || ''
+                    planType: plan_type,
+                    billingCycle: billing_cycle,
+                    productId: product_id || getProductId(plan_type),
+                    isTherapyReferral: 'false',
+                    modifiedAt: new Date().toISOString(),
+                    promoCode: promo_code || ''
                 }
             };
             
@@ -1703,9 +1703,9 @@ app.post('/api/modify-subscription', async (req, res) => {
             await stripe.customers.update(customer.id, {
                 metadata: {
                     ...customer.metadata,
-                    plan_type: plan_type,
-                    billing_cycle: billing_cycle,
-                    last_modified: new Date().toISOString()
+                    planType: plan_type,
+                    billingCycle: billing_cycle,
+                    lastModified: new Date().toISOString()
                 }
             });
             
