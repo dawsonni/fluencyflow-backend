@@ -1587,6 +1587,11 @@ app.post('/api/modify-subscription', async (req, res) => {
             await new Promise(resolve => setTimeout(resolve, 100));
         }
         
+        // Wait for Firebase to be initialized
+        while (!firebaseInitialized) {
+            await new Promise(resolve => setTimeout(resolve, 100));
+        }
+        
         const { plan_type, billing_cycle, user_id, user_email, price_id, product_id, promo_code } = req.body;
         
         console.log('Modifying subscription:', { plan_type, billing_cycle, user_id, user_email, price_id });
@@ -1712,8 +1717,23 @@ app.post('/api/modify-subscription', async (req, res) => {
                 }
             });
             
-            // Note: Database operations are handled by the iOS app
-            // The iOS app will fetch the updated subscription from Stripe
+            // IMPORTANT: Directly update Firebase since webhook may not fire reliably
+            try {
+                const subscriptionId = `sub_${updatedSubscription.id}`;
+                await admin.firestore().collection('subscriptions').doc(subscriptionId).update({
+                    planType: plan_type,
+                    billingCycle: billing_cycle,
+                    status: updatedSubscription.status,
+                    currentPeriodStart: new Date(updatedSubscription.current_period_start * 1000).toISOString(),
+                    currentPeriodEnd: new Date(updatedSubscription.current_period_end * 1000).toISOString(),
+                    cancelAtPeriodEnd: updatedSubscription.cancel_at_period_end || false,
+                    updatedAt: new Date().toISOString()
+                });
+                console.log('✅ Firebase updated directly with new plan type:', plan_type);
+            } catch (firebaseError) {
+                console.error('❌ Failed to update Firebase directly:', firebaseError);
+                // Don't fail the request if Firebase update fails
+            }
             
             console.log('✅ Subscription modified successfully:', updatedSubscription.id);
             
