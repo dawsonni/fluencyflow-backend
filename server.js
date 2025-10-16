@@ -1695,9 +1695,12 @@ app.post('/api/modify-subscription', async (req, res) => {
                 }
             }
             
+            console.log('📋 Sending update to Stripe with metadata:', JSON.stringify(updateData.metadata));
+            
             const updatedSubscription = await stripe.subscriptions.update(existingSubscription.id, updateData);
             
             console.log('Subscription updated successfully:', updatedSubscription.id);
+            console.log('📋 Stripe returned metadata:', JSON.stringify(updatedSubscription.metadata));
             
             // Update customer metadata
             await stripe.customers.update(customer.id, {
@@ -1999,6 +2002,9 @@ async function handleSubscriptionUpdated(subscription) {
     console.log('📋 Subscription updated:', subscription.id);
     
     try {
+        // Log the raw metadata to see what Stripe is sending
+        console.log('📋 Stripe metadata received:', JSON.stringify(subscription.metadata));
+        
         // Update subscription in Firebase - ALWAYS include planType and billingCycle from metadata
         const subscriptionData = {
             status: subscription.status,
