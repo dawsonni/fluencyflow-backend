@@ -1999,9 +1999,11 @@ async function handleSubscriptionUpdated(subscription) {
     console.log('📋 Subscription updated:', subscription.id);
     
     try {
-        // Update subscription in Firebase
+        // Update subscription in Firebase - ALWAYS include planType and billingCycle from metadata
         const subscriptionData = {
             status: subscription.status,
+            planType: subscription.metadata?.planType || 'unknown',
+            billingCycle: subscription.metadata?.billingCycle || 'monthly',
             cancelAtPeriodEnd: subscription.cancel_at_period_end || false,
             currentPeriodStart: new Date(subscription.current_period_start * 1000).toISOString(),
             currentPeriodEnd: new Date(subscription.current_period_end * 1000).toISOString(),
@@ -2013,13 +2015,7 @@ async function handleSubscriptionUpdated(subscription) {
             subscriptionData.canceledAt = new Date().toISOString();
         }
         
-        // Update metadata if present
-        if (subscription.metadata?.planType) {
-            subscriptionData.planType = subscription.metadata.planType;
-        }
-        if (subscription.metadata?.billingCycle) {
-            subscriptionData.billingCycle = subscription.metadata.billingCycle;
-        }
+        console.log(`📋 Updating subscription with planType: ${subscriptionData.planType}, billingCycle: ${subscriptionData.billingCycle}`);
         
         await admin.firestore().collection('subscriptions').doc(`sub_${subscription.id}`).update(subscriptionData);
         console.log('✅ Subscription updated in Firebase');
