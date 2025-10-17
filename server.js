@@ -625,6 +625,140 @@ app.post('/api/send-verification-email', async (req, res) => {
     }
 });
 
+// Helper function to send subscription confirmation email with cancellation instructions
+async function sendSubscriptionConfirmationEmail({ userEmail, planType, billingCycle, amount, nextBillingDate }) {
+    const planDisplayName = planType.charAt(0).toUpperCase() + planType.slice(1);
+    const billingDisplayName = billingCycle === 'monthly' ? 'Monthly' : 'Yearly';
+    const renewalFrequency = billingCycle === 'monthly' ? 'month' : 'year';
+    const formattedAmount = `$${amount.toFixed(2)}`;
+    const formattedDate = new Date(nextBillingDate).toLocaleDateString('en-US', { 
+        year: 'numeric', 
+        month: 'long', 
+        day: 'numeric' 
+    });
+    
+    const htmlContent = `
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="utf-8">
+        <title>Subscription Confirmation - FluencyFlow</title>
+    </head>
+    <body style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; background-color: #f5f5f5;">
+        <div style="background-color: white; padding: 30px; border-radius: 12px; box-shadow: 0 2px 10px rgba(0,0,0,0.1);">
+            <div style="text-align: center; margin-bottom: 30px;">
+                <h1 style="color: #0ea5e9; margin: 0;">FluencyFlow</h1>
+                <p style="color: #666; margin-top: 5px;">Speech Practice Made Easy</p>
+            </div>
+            
+            <div style="background-color: #dbeafe; padding: 20px; border-radius: 8px; margin-bottom: 30px;">
+                <h2 style="color: #0369a1; margin-top: 0;">✅ Subscription Confirmed!</h2>
+                <p style="color: #075985; margin-bottom: 0;">Thank you for subscribing to FluencyFlow. Your subscription is now active.</p>
+            </div>
+            
+            <h3 style="color: #333; border-bottom: 2px solid #0ea5e9; padding-bottom: 10px;">Subscription Details</h3>
+            <table style="width: 100%; margin-bottom: 30px;">
+                <tr>
+                    <td style="padding: 10px 0; color: #666;">Plan:</td>
+                    <td style="padding: 10px 0; font-weight: bold; text-align: right;">${planDisplayName}</td>
+                </tr>
+                <tr>
+                    <td style="padding: 10px 0; color: #666;">Billing:</td>
+                    <td style="padding: 10px 0; font-weight: bold; text-align: right;">${billingDisplayName}</td>
+                </tr>
+                <tr>
+                    <td style="padding: 10px 0; color: #666;">Amount:</td>
+                    <td style="padding: 10px 0; font-weight: bold; text-align: right; color: #0ea5e9;">${formattedAmount}</td>
+                </tr>
+                <tr>
+                    <td style="padding: 10px 0; color: #666;">Next Billing Date:</td>
+                    <td style="padding: 10px 0; font-weight: bold; text-align: right;">${formattedDate}</td>
+                </tr>
+            </table>
+            
+            <div style="background-color: #fef3c7; padding: 20px; border-radius: 8px; border-left: 4px solid #f59e0b; margin-bottom: 30px;">
+                <h3 style="color: #92400e; margin-top: 0;">⚠️ Auto-Renewal Notice</h3>
+                <p style="color: #78350f; margin-bottom: 10px;">Your subscription will automatically renew every ${renewalFrequency} for ${formattedAmount} unless you cancel.</p>
+                <p style="color: #78350f; margin-bottom: 0;"><strong>You can cancel anytime.</strong> Cancellation takes effect at the end of your billing period, so you'll keep access until ${formattedDate}.</p>
+            </div>
+            
+            <h3 style="color: #333; border-bottom: 2px solid #0ea5e9; padding-bottom: 10px;">How to Cancel Your Subscription</h3>
+            <div style="margin-bottom: 30px;">
+                <div style="display: flex; margin-bottom: 15px;">
+                    <div style="background-color: #0ea5e9; color: white; width: 30px; height: 30px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: bold; margin-right: 15px;">1</div>
+                    <p style="margin: 5px 0; color: #333;">Open the FluencyFlow app and go to <strong>Settings</strong></p>
+                </div>
+                <div style="display: flex; margin-bottom: 15px;">
+                    <div style="background-color: #0ea5e9; color: white; width: 30px; height: 30px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: bold; margin-right: 15px;">2</div>
+                    <p style="margin: 5px 0; color: #333;">Tap <strong>Subscription</strong> and then <strong>Cancel Subscription</strong></p>
+                </div>
+                <div style="display: flex; margin-bottom: 15px;">
+                    <div style="background-color: #0ea5e9; color: white; width: 30px; height: 30px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: bold; margin-right: 15px;">3</div>
+                    <p style="margin: 5px 0; color: #333;">Or via iOS Settings: <strong>Settings → [Your Name] → Subscriptions → FluencyFlow</strong></p>
+                </div>
+            </div>
+            
+            <div style="background-color: #f0f9ff; padding: 15px; border-radius: 8px; margin-bottom: 30px;">
+                <p style="margin: 0; font-size: 14px; color: #0369a1;">
+                    <strong>Note:</strong> No refunds are provided for partial billing periods. You'll retain full access through the end of your current billing cycle after cancellation.
+                </p>
+            </div>
+            
+            <hr style="border: none; border-top: 1px solid #e5e7eb; margin: 30px 0;">
+            
+            <p style="font-size: 14px; color: #666; text-align: center;">
+                Need help? Contact us at <a href="mailto:support@fluencyflow.app" style="color: #0ea5e9; text-decoration: none;">support@fluencyflow.app</a>
+            </p>
+            
+            <p style="font-size: 12px; color: #999; text-align: center; margin-top: 20px;">
+                This email confirms your FluencyFlow subscription. For billing questions, please contact support.
+            </p>
+        </div>
+    </body>
+    </html>
+    `;
+    
+    const textContent = `
+    Subscription Confirmation - FluencyFlow
+    
+    Thank you for subscribing to FluencyFlow!
+    
+    Subscription Details:
+    - Plan: ${planDisplayName}
+    - Billing: ${billingDisplayName}
+    - Amount: ${formattedAmount}
+    - Next Billing Date: ${formattedDate}
+    
+    AUTO-RENEWAL NOTICE:
+    Your subscription will automatically renew every ${renewalFrequency} for ${formattedAmount} unless you cancel.
+    You can cancel anytime. Cancellation takes effect at the end of your billing period.
+    
+    HOW TO CANCEL YOUR SUBSCRIPTION:
+    
+    1. Open the FluencyFlow app and go to Settings
+    2. Tap "Subscription" and then "Cancel Subscription"
+    3. Or via iOS Settings: Settings → [Your Name] → Subscriptions → FluencyFlow
+    
+    Note: No refunds are provided for partial billing periods. You'll retain full access through ${formattedDate} after cancellation.
+    
+    Need help? Contact us at support@fluencyflow.app
+    
+    FluencyFlow Team
+    `;
+    
+    const mailOptions = {
+        from: '"FluencyFlow" <subscriptions@fluencyflow.app>',
+        to: userEmail,
+        subject: `Subscription Confirmed - ${planDisplayName} Plan`,
+        text: textContent,
+        html: htmlContent
+    };
+    
+    const info = await emailTransporter.sendMail(mailOptions);
+    console.log('✅ Subscription confirmation email sent:', info.messageId);
+    return info;
+}
+
 // Verify parental consent token endpoint
 app.post('/api/verify-parental-consent', async (req, res) => {
     try {
@@ -1557,6 +1691,21 @@ app.post('/api/create-subscription', async (req, res) => {
             } catch (firebaseError) {
                 console.error('❌ Failed to save subscription to Firebase:', firebaseError);
                 // Don't fail the subscription creation if Firebase save fails
+            }
+            
+            // Send subscription confirmation email with cancellation instructions
+            try {
+                await sendSubscriptionConfirmationEmail({
+                    userEmail: user_email,
+                    planType: plan_type,
+                    billingCycle: billing_cycle,
+                    amount: stripeSubscription.items.data[0]?.price?.unit_amount / 100 || 0,
+                    nextBillingDate: subscription.currentPeriodEnd
+                });
+                console.log('✅ Subscription confirmation email sent');
+            } catch (emailError) {
+                console.error('❌ Failed to send subscription confirmation email:', emailError);
+                // Continue even if email fails - don't block subscription creation
             }
             
             res.json(subscription);
