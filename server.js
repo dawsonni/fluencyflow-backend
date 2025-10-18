@@ -1186,6 +1186,7 @@ app.post('/api/cancel-subscription', async (req, res) => {
         console.log('Subscription cancelled:', subscription.id);
         
         // Update Firebase subscription status
+        let updatedSubscriptionData = null;
         try {
             const subscriptionId = `sub_${subscription.id}`;
             await admin.firestore().collection('subscriptions').doc(subscriptionId).update({
@@ -1195,6 +1196,12 @@ app.post('/api/cancel-subscription', async (req, res) => {
                 updatedAt: new Date().toISOString()
             });
             console.log('Updated Firebase subscription status to cancelled');
+            
+            // Fetch the complete subscription data from Firebase
+            const subscriptionDoc = await admin.firestore().collection('subscriptions').doc(subscriptionId).get();
+            if (subscriptionDoc.exists) {
+                updatedSubscriptionData = subscriptionDoc.data();
+            }
         } catch (firebaseError) {
             console.log('Failed to update Firebase subscription:', firebaseError.message);
             // Don't fail the cancellation if Firebase update fails
@@ -1202,11 +1209,13 @@ app.post('/api/cancel-subscription', async (req, res) => {
         
         res.json({ 
             success: true, 
-            subscription: {
-                id: subscription.id,
+            subscription: updatedSubscriptionData || {
+                id: `sub_${subscription.id}`,
                 status: subscription.status,
                 cancel_at_period_end: subscription.cancel_at_period_end,
-                current_period_end: subscription.current_period_end
+                current_period_end: subscription.current_period_end,
+                cancelAtPeriodEnd: subscription.cancel_at_period_end,
+                currentPeriodEnd: new Date(subscription.current_period_end * 1000).toISOString()
             }
         });
     } catch (error) {
