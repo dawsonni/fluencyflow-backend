@@ -893,8 +893,10 @@ app.get('/api/current-subscription', async (req, res) => {
                 console.log('✅ Subscription details:', {
                     planType: firebaseSub.planType,
                     status: firebaseSub.status,
-                    userId: firebaseSub.userId
+                    userId: firebaseSub.userId,
+                    cancelAtPeriodEnd: firebaseSub.cancelAtPeriodEnd
                 });
+                console.log('✅ Full subscription data:', JSON.stringify(firebaseSub, null, 2));
                 return res.json(firebaseSub);
             } else {
                 console.log('🔥 No active subscription found in Firebase, checking Stripe...');
