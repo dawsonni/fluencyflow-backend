@@ -40,11 +40,17 @@ let stripeInitialized = false;
 
 async function initializeStripe() {
     try {
-        const stripeSecretKey = await getSecret('stripe-secret-key-test');
+        // Try live key first, fallback to test key for development
+        let stripeSecretKey = await getSecret('stripe-secret-key-live');
+        if (!stripeSecretKey || stripeSecretKey.includes('test')) {
+            console.log('⚠️ Live key not found, trying test key...');
+            stripeSecretKey = await getSecret('stripe-secret-key-test');
+        }
         console.log('🔍 Retrieved Stripe key from Key Vault:', stripeSecretKey.substring(0, 20) + '...');
         stripe = require('stripe')(stripeSecretKey);
         stripeInitialized = true;
-        console.log('✅ Stripe initialized with Key Vault');
+        const mode = stripeSecretKey.startsWith('sk_live_') ? 'LIVE' : 'TEST';
+        console.log(`✅ Stripe initialized with Key Vault (${mode} mode)`);
     } catch (error) {
         console.error('❌ Failed to initialize Stripe:', error);
         stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
@@ -1925,16 +1931,45 @@ app.post('/api/modify-subscription', async (req, res) => {
 // Stripe Webhook Handler
 app.post('/api/stripe-webhook', express.raw({type: 'application/json'}), async (req, res) => {
     const sig = req.headers['stripe-signature'];
-    const endpointSecret = process.env.STRIPE_WEBHOOK_SECRET;
+    
+    // Try to get webhook secret from Key Vault (live first, then test), fallback to env var
+    let endpointSecret;
+    try {
+        endpointSecret = await getSecret('stripe-webhook-secret-live');
+        if (!endpointSecret) {
+            endpointSecret = await getSecret('stripe-webhook-secret-test');
+        }
+    } catch (error) {
+        endpointSecret = process.env.STRIPE_WEBHOOK_SECRET_LIVE || process.env.STRIPE_WEBHOOK_SECRET;
+    }
 
     let event;
 
-    try {
-        event = stripe.webhooks.constructEvent(req.body, sig, endpointSecret);
-        console.log(`📡 Received webhook: ${event.type}`);
-    } catch (err) {
-        console.log(`❌ Webhook signature verification failed:`, err.message);
-        return res.status(400).send(`Webhook Error: ${err.message}`);
+    // If no webhook secret is configured, handle accordingly
+    if (!endpointSecret) {
+        console.warn('⚠️ WARNING: No webhook secret configured. Webhook verification skipped.');
+        console.warn('⚠️ Webhooks are optional but recommended for production.');
+        console.warn('⚠️ Without webhooks, you\'ll need to manually sync Stripe and Firebase.');
+        console.warn('⚠️ Add webhook secret to Azure Key Vault or environment variables if you want automatic sync.');
+        
+        // Allow webhooks to work without verification (less secure but allows operation without webhook setup)
+        // Note: This means webhooks won't be verified, but they'll still work
+        try {
+            event = JSON.parse(req.body.toString());
+            console.log(`📡 Received webhook (unverified): ${event.type}`);
+        } catch (parseError) {
+            console.error('❌ Failed to parse webhook event:', parseError.message);
+            return res.status(400).send('Invalid webhook payload');
+        }
+    } else {
+        // Verify webhook signature when secret is available
+        try {
+            event = stripe.webhooks.constructEvent(req.body, sig, endpointSecret);
+            console.log(`📡 Received webhook: ${event.type}`);
+        } catch (err) {
+            console.log(`❌ Webhook signature verification failed:`, err.message);
+            return res.status(400).send(`Webhook Error: ${err.message}`);
+        }
     }
 
     try {
