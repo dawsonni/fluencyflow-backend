@@ -24,13 +24,14 @@ async function getSecret(secretName) {
 }
 
 // Helper function to get product ID for plan type
+// Updated with live mode product IDs
 function getProductId(planType) {
     const productMapping = {
-        'starter': 'prod_T7bU5ypppEYoVr',
-        'professional': 'prod_T7bU5ypppEYoVr', 
-        'premium': 'prod_T7bU5ypppEYoVr'
+        'starter': 'prod_TQKX3faDpap0ks',
+        'professional': 'prod_TQKYZ1drtgQgxj', 
+        'premium': 'prod_TQKYcpijkq1LcL'
     };
-    return productMapping[planType] || 'prod_T7bU5ypppEYoVr';
+    return productMapping[planType] || 'prod_TQKX3faDpap0ks';
 }
 
 
@@ -1515,19 +1516,20 @@ app.post('/api/create-subscription', async (req, res) => {
             let priceId = price_id;
             
             // Fallback to hardcoded mapping if price_id not provided (for backward compatibility)
+            // Updated with live mode price IDs
             if (!priceId) {
                 if (plan_type === 'starter' && billing_cycle === 'monthly') {
-                    priceId = 'price_1SBMCh2QVCQwj6xKAxuwKisC';
+                    priceId = 'price_1STTsfCdYlZtgYGH84EG1xr3';
                 } else if (plan_type === 'starter' && billing_cycle === 'yearly') {
-                    priceId = 'price_1SBMGX2QVCQwj6xKb9suTwhR';
+                    priceId = 'price_1STTsfCdYlZtgYGHTI2MDIOF';
                 } else if (plan_type === 'professional' && billing_cycle === 'monthly') {
-                    priceId = 'price_1SBMHE2QVCQwj6xKgYNPRtB6';
+                    priceId = 'price_1STTtDCdYlZtgYGHzir9N25f';
                 } else if (plan_type === 'professional' && billing_cycle === 'yearly') {
-                    priceId = 'price_1SBMHU2QVCQwj6xKk4AtbNBd';
+                    priceId = 'price_1STTtDCdYlZtgYGHzFQDaZ0L';
                 } else if (plan_type === 'premium' && billing_cycle === 'monthly') {
-                    priceId = 'price_1SBMHv2QVCQwj6xKON7BWqbX';
+                    priceId = 'price_1STTtGCdYlZtgYGHtVqFhO2M';
                 } else if (plan_type === 'premium' && billing_cycle === 'yearly') {
-                    priceId = 'price_1SBMI52QVCQwj6xKlJR975L0';
+                    priceId = 'price_1STTtGCdYlZtgYGHCIrEGABA';
                 } else {
                     throw new Error(`Unsupported plan: ${plan_type} ${billing_cycle}`);
                 }
