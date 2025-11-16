@@ -1181,16 +1181,32 @@ app.post('/api/create-setup-intent', async (req, res) => {
 // Cancel subscription endpoint
 app.post('/api/cancel-subscription', async (req, res) => {
     try {
-        const { subscription_id } = req.body;
+        let { subscription_id } = req.body;
         
         console.log('Cancelling subscription:', subscription_id);
         
-        // Cancel the subscription at the end of the current period
-        const subscription = await stripe.subscriptions.update(subscription_id, {
-            cancel_at_period_end: true
-        });
+        // Strip 'sub_' prefix if present (Stripe API expects just the ID)
+        if (subscription_id && subscription_id.startsWith('sub_')) {
+            subscription_id = subscription_id.substring(4);
+            console.log('Stripped prefix, using subscription ID:', subscription_id);
+        }
         
-        console.log('Subscription cancelled:', subscription.id);
+        // Cancel the subscription at the end of the current period
+        let subscription;
+        try {
+            subscription = await stripe.subscriptions.update(subscription_id, {
+                cancel_at_period_end: true
+            });
+            console.log('Subscription cancelled:', subscription.id);
+        } catch (stripeError) {
+            // Provide more helpful error message
+            if (stripeError.type === 'StripeInvalidRequestError' && stripeError.code === 'resource_missing') {
+                console.error(`❌ Subscription not found: ${subscription_id}`);
+                console.error('⚠️ This might be a test mode subscription. Make sure you\'re using the correct Stripe mode.');
+                throw new Error(`Subscription not found. This subscription may have been created in test mode, or it may have been deleted. Subscription ID: ${subscription_id}`);
+            }
+            throw stripeError;
+        }
         
         // Update Firebase subscription status
         let updatedSubscriptionData = null;
