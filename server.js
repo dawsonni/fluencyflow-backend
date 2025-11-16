@@ -1192,10 +1192,9 @@ app.post('/api/cancel-subscription', async (req, res) => {
         
         console.log('Cancelling subscription:', subscription_id);
         
-        // Strip 'sub_' prefix if present (Stripe API expects just the ID)
-        if (subscription_id && subscription_id.startsWith('sub_')) {
-            subscription_id = subscription_id.substring(4);
-            console.log('Stripped prefix, using subscription ID:', subscription_id);
+        // Ensure we pass the full Stripe subscription ID (should start with 'sub_')
+        if (!subscription_id || !subscription_id.startsWith('sub_')) {
+            console.warn('⚠️ Expected a Stripe subscription ID starting with sub_. Received:', subscription_id);
         }
         
         // Cancel the subscription at the end of the current period
