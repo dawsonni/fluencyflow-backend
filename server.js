@@ -1619,6 +1619,27 @@ app.post('/api/create-subscription', async (req, res) => {
                 }
             };
             
+            // If we have a payment intent that was already paid, prevent duplicate charge
+            if (payment_intent_id) {
+                try {
+                    const paymentIntent = await stripe.paymentIntents.retrieve(payment_intent_id);
+                    console.log('Payment intent status:', paymentIntent.status);
+                    
+                    // If payment intent was already succeeded, use pending_if_incomplete to avoid double charge
+                    // Then we'll manually pay the invoice using the existing payment intent
+                    if (paymentIntent.status === 'succeeded') {
+                        console.log('Payment intent already succeeded, setting payment_behavior to pending_if_incomplete');
+                        subscriptionData.payment_behavior = 'pending_if_incomplete';
+                        subscriptionData.payment_settings = {
+                            payment_method_types: ['card'],
+                            save_default_payment_method: 'on_subscription'
+                        };
+                    }
+                } catch (piError) {
+                    console.error('Error checking payment intent status:', piError);
+                }
+            }
+            
             // Add coupon if promo code was provided
             if (promo_code) {
                 try {
@@ -1640,6 +1661,23 @@ app.post('/api/create-subscription', async (req, res) => {
             }
             
             const stripeSubscription = await stripe.subscriptions.create(subscriptionData);
+            
+            // If subscription was created with pending payment, pay the invoice using existing payment intent
+            if (payment_intent_id && stripeSubscription.latest_invoice) {
+                try {
+                    const invoice = await stripe.invoices.retrieve(stripeSubscription.latest_invoice);
+                    if (invoice.status === 'open' || invoice.status === 'draft') {
+                        console.log('Paying invoice with existing payment intent:', payment_intent_id);
+                        await stripe.invoices.pay(invoice.id, {
+                            payment_method: (await stripe.paymentIntents.retrieve(payment_intent_id)).payment_method
+                        });
+                        console.log('Invoice paid successfully using existing payment intent');
+                    }
+                } catch (invoiceError) {
+                    console.error('Error paying invoice with existing payment intent:', invoiceError);
+                    // Continue - subscription is created, invoice will be paid on next attempt
+                }
+            }
             
             console.log('Stripe subscription created successfully:', stripeSubscription.id);
             console.log('Subscription status:', stripeSubscription.status);
