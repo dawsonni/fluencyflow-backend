@@ -154,7 +154,14 @@ const verificationTokens = new Map();
 
 // Middleware
 app.use(cors());
-app.use(express.json());
+// IMPORTANT: Do NOT apply JSON body parsing to the Stripe webhook route,
+// Stripe requires the raw body for signature verification
+app.use((req, res, next) => {
+    if (req.originalUrl === '/api/stripe-webhook') {
+        return next();
+    }
+    return express.json()(req, res, next);
+});
 app.use(express.static('public')); // Serve static files
 
 // Health check endpoint
