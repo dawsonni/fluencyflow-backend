@@ -1559,30 +1559,38 @@ app.post('/api/create-subscription', async (req, res) => {
             
             console.log(`Creating Stripe subscription with price ID: ${priceId}`);
             
-            // If we have a payment intent ID, retrieve the payment method and attach it to the customer
+            // If we have a payment intent ID, check if it already succeeded
+            // If it did, we'll attach the payment method but NOT set it as default to prevent double charge
+            let paymentIntentSucceeded = false;
+            let paymentMethodId = null;
+            
             if (payment_intent_id) {
-                console.log('Attempting to attach payment method from payment intent:', payment_intent_id);
                 try {
                     const paymentIntent = await stripe.paymentIntents.retrieve(payment_intent_id);
                     console.log('Retrieved payment intent:', paymentIntent.id, 'Status:', paymentIntent.status);
-                    console.log('Payment method ID:', paymentIntent.payment_method);
+                    paymentIntentSucceeded = paymentIntent.status === 'succeeded';
+                    paymentMethodId = paymentIntent.payment_method;
                     
-                    if (paymentIntent.payment_method) {
+                    if (paymentMethodId) {
                         // Attach the payment method to the customer
                         console.log('Attaching payment method to customer:', customer.id);
-                        await stripe.paymentMethods.attach(paymentIntent.payment_method, {
+                        await stripe.paymentMethods.attach(paymentMethodId, {
                             customer: customer.id,
                         });
                         
-                        // Set as default payment method
-                        console.log('Setting as default payment method');
-                        await stripe.customers.update(customer.id, {
-                            invoice_settings: {
-                                default_payment_method: paymentIntent.payment_method,
-                            },
-                        });
+                        // Only set as default if payment intent hasn't succeeded yet (to prevent double charge)
+                        if (!paymentIntentSucceeded) {
+                            console.log('Setting as default payment method');
+                            await stripe.customers.update(customer.id, {
+                                invoice_settings: {
+                                    default_payment_method: paymentMethodId,
+                                },
+                            });
+                        } else {
+                            console.log('⚠️ Payment intent already succeeded - NOT setting as default to prevent double charge');
+                        }
                         
-                        console.log('Payment method attached successfully:', paymentIntent.payment_method);
+                        console.log('Payment method attached successfully:', paymentMethodId);
                     } else {
                         console.log('No payment method found in payment intent');
                     }
@@ -1619,27 +1627,8 @@ app.post('/api/create-subscription', async (req, res) => {
                 }
             };
             
-            // If payment intent already succeeded, prevent double charge by using default_incomplete
-            // This creates the subscription without charging, then we'll pay the invoice manually
-            if (payment_intent_id) {
-                try {
-                    const paymentIntent = await stripe.paymentIntents.retrieve(payment_intent_id);
-                    console.log('Payment intent status:', paymentIntent.status);
-                    
-                    if (paymentIntent.status === 'succeeded') {
-                        console.log('⚠️ Payment intent already succeeded - using default_incomplete to prevent double charge');
-                        subscriptionData.payment_behavior = 'default_incomplete';
-                        // Don't set default payment method - we'll use the one from payment intent
-                        subscriptionData.payment_settings = {
-                            payment_method_types: ['card'],
-                            save_default_payment_method: 'on_subscription'
-                        };
-                    }
-                } catch (piError) {
-                    console.error('Error checking payment intent status:', piError);
-                    // Continue without payment_behavior if check fails
-                }
-            }
+            // If payment intent already succeeded, we didn't set a default payment method
+            // So Stripe won't charge automatically. We'll pay the invoice manually after creation.
             
             // Add coupon if promo code was provided
             if (promo_code) {
@@ -1676,10 +1665,9 @@ app.post('/api/create-subscription', async (req, res) => {
                     // Continue with original subscription data
                 }
             }
-            // If subscription was created with default_incomplete (to prevent double charge), pay the invoice
-            // This happens when payment intent already succeeded and we're preventing duplicate charge
-            // We'll pay the invoice if it exists and needs payment
-            else if (payment_intent_id && stripeSubscription.latest_invoice) {
+            // If payment intent already succeeded, we didn't set default payment method
+            // So we need to manually pay the invoice to activate the subscription
+            else if (paymentIntentSucceeded && paymentMethodId && stripeSubscription.latest_invoice) {
                 try {
                     // Get invoice ID (could be string or object)
                     const invoiceId = typeof stripeSubscription.latest_invoice === 'string' 
@@ -1690,26 +1678,15 @@ app.post('/api/create-subscription', async (req, res) => {
                     console.log('Invoice status:', invoice.status);
                     
                     if (invoice.status === 'open' || invoice.status === 'draft') {
-                        // Get payment method from payment intent
-                        const paymentIntent = await stripe.paymentIntents.retrieve(payment_intent_id);
-                        const paymentMethodId = paymentIntent.payment_method;
+                        console.log('Paying invoice with payment method from succeeded payment intent:', paymentMethodId);
+                        await stripe.invoices.pay(invoiceId, {
+                            payment_method: paymentMethodId
+                        });
+                        console.log('✅ Invoice paid successfully - subscription should now be active');
                         
-                        if (!paymentMethodId) {
-                            console.warn('⚠️ No payment method found in payment intent, skipping invoice payment');
-                            // Still refresh subscription to get current status
-                            stripeSubscription = await stripe.subscriptions.retrieve(stripeSubscription.id);
-                        } else {
-                            console.log('Paying invoice with payment method:', paymentMethodId);
-                            await stripe.invoices.pay(invoiceId, {
-                                payment_method: paymentMethodId
-                            });
-                            console.log('✅ Invoice paid successfully using existing payment intent');
-                            
-                            // IMPORTANT: Refresh subscription to get updated status after invoice payment
-                            // This ensures we save the correct "active" status to Firebase
-                            stripeSubscription = await stripe.subscriptions.retrieve(stripeSubscription.id);
-                            console.log('✅ Refreshed subscription status after invoice payment:', stripeSubscription.status);
-                        }
+                        // IMPORTANT: Refresh subscription to get updated status after invoice payment
+                        stripeSubscription = await stripe.subscriptions.retrieve(stripeSubscription.id);
+                        console.log('✅ Refreshed subscription status after invoice payment:', stripeSubscription.status);
                     } else {
                         console.log('Invoice already paid or in different state:', invoice.status);
                         // Still refresh subscription to get latest status
@@ -1717,13 +1694,12 @@ app.post('/api/create-subscription', async (req, res) => {
                         console.log('✅ Refreshed subscription status:', stripeSubscription.status);
                     }
                 } catch (invoiceError) {
-                    console.error('❌ Error paying invoice with existing payment intent:', invoiceError);
+                    console.error('❌ Error paying invoice:', invoiceError);
                     console.error('❌ Invoice error details:', {
                         message: invoiceError.message,
                         type: invoiceError.type,
                         code: invoiceError.code
                     });
-                    // Continue - subscription is created, invoice will be paid on next attempt
                     // Still try to refresh subscription to get current status
                     try {
                         stripeSubscription = await stripe.subscriptions.retrieve(stripeSubscription.id);
