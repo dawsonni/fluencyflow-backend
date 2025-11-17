@@ -1222,7 +1222,11 @@ app.post('/api/cancel-subscription', async (req, res) => {
         // Update Firebase subscription status
         let updatedSubscriptionData = null;
         try {
-            const subscriptionId = `sub_${subscription.id}`;
+            // Stripe subscription IDs already start with "sub_", so use it directly
+            const subscriptionId = subscription.id.startsWith('sub_') 
+                ? subscription.id 
+                : `sub_${subscription.id}`;
+            
             await admin.firestore().collection('subscriptions').doc(subscriptionId).update({
                 status: subscription.status,
                 cancelAtPeriodEnd: subscription.cancel_at_period_end,
@@ -1241,10 +1245,15 @@ app.post('/api/cancel-subscription', async (req, res) => {
             // Don't fail the cancellation if Firebase update fails
         }
         
+        // Stripe subscription IDs already start with "sub_", so use it directly for response
+        const responseSubscriptionId = subscription.id.startsWith('sub_') 
+            ? subscription.id 
+            : `sub_${subscription.id}`;
+        
         res.json({ 
             success: true, 
             subscription: updatedSubscriptionData || {
-                id: `sub_${subscription.id}`,
+                id: responseSubscriptionId,
                 status: subscription.status,
                 cancel_at_period_end: subscription.cancel_at_period_end,
                 current_period_end: subscription.current_period_end,
@@ -1277,7 +1286,11 @@ app.post('/api/reactivate-subscription', async (req, res) => {
         
         // Update Firebase subscription status
         try {
-            const subscriptionId = `sub_${subscription.id}`;
+            // Stripe subscription IDs already start with "sub_", so use it directly
+            const subscriptionId = subscription.id.startsWith('sub_') 
+                ? subscription.id 
+                : `sub_${subscription.id}`;
+            
             await admin.firestore().collection('subscriptions').doc(subscriptionId).update({
                 status: subscription.status,
                 cancelAtPeriodEnd: subscription.cancel_at_period_end,
@@ -1290,10 +1303,15 @@ app.post('/api/reactivate-subscription', async (req, res) => {
             // Don't fail the reactivation if Firebase update fails
         }
         
+        // Stripe subscription IDs already start with "sub_", so use it directly for response
+        const responseSubscriptionId = subscription.id.startsWith('sub_') 
+            ? subscription.id 
+            : `sub_${subscription.id}`;
+        
         res.json({ 
             success: true, 
             subscription: {
-                id: subscription.id,
+                id: responseSubscriptionId,
                 status: subscription.status,
                 cancel_at_period_end: subscription.cancel_at_period_end,
                 current_period_end: subscription.current_period_end
@@ -1988,12 +2006,27 @@ app.post('/api/modify-subscription', async (req, res) => {
             // If proration was created, pay the invoice immediately
             if (updatedSubscription.latest_invoice) {
                 try {
-                    const invoice = await stripe.invoices.retrieve(updatedSubscription.latest_invoice);
+                    const invoice = await stripe.invoices.retrieve(updatedSubscription.latest_invoice, {
+                        expand: ['lines.data']
+                    });
                     console.log('Latest invoice status:', invoice.status);
+                    console.log('Invoice amount:', invoice.amount_due);
+                    console.log('Invoice has proration date:', !!invoice.subscription_proration_date);
                     
-                    // If this is a proration invoice (has subscription_proration_date), pay it immediately
-                    if (invoice.subscription_proration_date && (invoice.status === 'open' || invoice.status === 'draft')) {
-                        console.log('💰 Proration invoice created, paying immediately...');
+                    // Check if this is a proration invoice:
+                    // 1. Has subscription_proration_date, OR
+                    // 2. Has line items with proration: true, OR
+                    // 3. Amount is non-zero and invoice is open/draft
+                    const hasProration = invoice.subscription_proration_date || 
+                                       (invoice.lines?.data?.some(line => line.proration === true)) ||
+                                       (invoice.amount_due !== 0 && (invoice.status === 'open' || invoice.status === 'draft'));
+                    
+                    // Check if invoice needs payment
+                    if (invoice.status === 'paid') {
+                        console.log('✅ Proration invoice already paid automatically by Stripe');
+                    } else if (hasProration && (invoice.status === 'open' || invoice.status === 'draft')) {
+                        console.log('💰 Proration invoice detected, paying immediately...');
+                        console.log('Invoice amount to pay:', invoice.amount_due / 100, 'USD');
                         
                         // Get customer's default payment method
                         const customerWithPayment = await stripe.customers.retrieve(customer.id, {
@@ -2032,16 +2065,29 @@ app.post('/api/modify-subscription', async (req, res) => {
                         }
                         
                         if (paymentMethodId) {
-                            await stripe.invoices.pay(invoice.id, {
+                            console.log('Using payment method:', paymentMethodId);
+                            const paidInvoice = await stripe.invoices.pay(invoice.id, {
                                 payment_method: paymentMethodId
                             });
                             console.log('✅ Proration invoice paid successfully');
+                            console.log('Paid invoice status:', paidInvoice.status);
+                            console.log('Paid invoice amount:', paidInvoice.amount_paid / 100, 'USD');
                         } else {
                             console.warn('⚠️ No payment method found, proration invoice not paid automatically');
+                            console.warn('⚠️ Invoice will remain unpaid. Customer will need to pay manually or it will be retried.');
                         }
+                    } else if (invoice.amount_due === 0) {
+                        console.log('ℹ️ Invoice has zero amount due (downgrade or credit), no payment needed');
+                    } else {
+                        console.log('ℹ️ Invoice status:', invoice.status, '- not a proration invoice or already processed');
                     }
                 } catch (invoiceError) {
                     console.error('❌ Error handling proration invoice:', invoiceError);
+                    console.error('❌ Invoice error details:', {
+                        message: invoiceError.message,
+                        type: invoiceError.type,
+                        code: invoiceError.code
+                    });
                     // Don't fail the subscription update if invoice payment fails
                 }
             }
