@@ -1759,7 +1759,10 @@ app.post('/api/create-subscription', async (req, res) => {
             
             // Save subscription to Firebase
             try {
-                const subscriptionId = `sub_${stripeSubscription.id}`;
+                // Stripe subscription IDs already start with "sub_", so use it directly
+                const subscriptionId = stripeSubscription.id.startsWith('sub_') 
+                    ? stripeSubscription.id 
+                    : `sub_${stripeSubscription.id}`;
                 await admin.firestore().collection('subscriptions').doc(subscriptionId).set({
                     id: subscriptionId,
                     userId: user_id,
@@ -1976,6 +1979,67 @@ app.post('/api/modify-subscription', async (req, res) => {
             console.log('Subscription updated successfully:', updatedSubscription.id);
             console.log('📋 Stripe returned metadata:', JSON.stringify(updatedSubscription.metadata));
             
+            // If proration was created, pay the invoice immediately
+            if (updatedSubscription.latest_invoice) {
+                try {
+                    const invoice = await stripe.invoices.retrieve(updatedSubscription.latest_invoice);
+                    console.log('Latest invoice status:', invoice.status);
+                    
+                    // If this is a proration invoice (has subscription_proration_date), pay it immediately
+                    if (invoice.subscription_proration_date && (invoice.status === 'open' || invoice.status === 'draft')) {
+                        console.log('💰 Proration invoice created, paying immediately...');
+                        
+                        // Get customer's default payment method
+                        const customerWithPayment = await stripe.customers.retrieve(customer.id, {
+                            expand: ['invoice_settings.default_payment_method']
+                        });
+                        
+                        let paymentMethodId = null;
+                        const defaultPaymentMethod = customerWithPayment.invoice_settings?.default_payment_method;
+                        
+                        if (defaultPaymentMethod) {
+                            paymentMethodId = typeof defaultPaymentMethod === 'string' 
+                                ? defaultPaymentMethod 
+                                : defaultPaymentMethod.id;
+                        } else {
+                            // If no default payment method, try to get one from the subscription
+                            const subscriptionWithPayment = await stripe.subscriptions.retrieve(updatedSubscription.id, {
+                                expand: ['default_payment_method']
+                            });
+                            
+                            if (subscriptionWithPayment.default_payment_method) {
+                                paymentMethodId = typeof subscriptionWithPayment.default_payment_method === 'string'
+                                    ? subscriptionWithPayment.default_payment_method
+                                    : subscriptionWithPayment.default_payment_method.id;
+                            } else {
+                                // Last resort: get the first payment method attached to the customer
+                                const paymentMethods = await stripe.paymentMethods.list({
+                                    customer: customer.id,
+                                    type: 'card',
+                                    limit: 1
+                                });
+                                
+                                if (paymentMethods.data.length > 0) {
+                                    paymentMethodId = paymentMethods.data[0].id;
+                                }
+                            }
+                        }
+                        
+                        if (paymentMethodId) {
+                            await stripe.invoices.pay(invoice.id, {
+                                payment_method: paymentMethodId
+                            });
+                            console.log('✅ Proration invoice paid successfully');
+                        } else {
+                            console.warn('⚠️ No payment method found, proration invoice not paid automatically');
+                        }
+                    }
+                } catch (invoiceError) {
+                    console.error('❌ Error handling proration invoice:', invoiceError);
+                    // Don't fail the subscription update if invoice payment fails
+                }
+            }
+            
             // Update customer metadata
             await stripe.customers.update(customer.id, {
                 metadata: {
@@ -1988,7 +2052,10 @@ app.post('/api/modify-subscription', async (req, res) => {
             
             // IMPORTANT: Directly update Firebase since webhook may not fire reliably
             try {
-                const subscriptionId = `sub_${updatedSubscription.id}`;
+                // Stripe subscription IDs already start with "sub_", so use it directly
+                const subscriptionId = updatedSubscription.id.startsWith('sub_') 
+                    ? updatedSubscription.id 
+                    : `sub_${updatedSubscription.id}`;
                 await admin.firestore().collection('subscriptions').doc(subscriptionId).update({
                     planType: plan_type,
                     billingCycle: billing_cycle,
@@ -2276,8 +2343,12 @@ async function handleSubscriptionCreated(subscription) {
         console.log('✅ Found userId:', userId);
         console.log('📋 Subscription metadata:', JSON.stringify(subscription.metadata));
         
+        // Stripe subscription IDs already start with "sub_", so use it directly
+        const subscriptionId = subscription.id.startsWith('sub_') 
+            ? subscription.id 
+            : `sub_${subscription.id}`;
+        
         // Check if subscription already exists in Firebase
-        const subscriptionId = `sub_${subscription.id}`;
         const existingSub = await admin.firestore().collection('subscriptions').doc(subscriptionId).get();
         
         if (existingSub.exists) {
@@ -2358,7 +2429,13 @@ async function handleSubscriptionUpdated(subscription) {
         
         console.log(`📋 Updating subscription with planType: ${subscriptionData.planType}, billingCycle: ${subscriptionData.billingCycle}`);
         
-        await admin.firestore().collection('subscriptions').doc(`sub_${subscription.id}`).update(subscriptionData);
+        // Stripe subscription IDs already start with "sub_", so use it directly
+        const subscriptionId = subscription.id.startsWith('sub_') 
+            ? subscription.id 
+            : `sub_${subscription.id}`;
+        
+        // Use set with merge to update or create if doesn't exist
+        await admin.firestore().collection('subscriptions').doc(subscriptionId).set(subscriptionData, { merge: true });
         console.log('✅ Subscription updated in Firebase');
         
         // If this subscription became active, ensure no other active subscriptions for this user
@@ -2440,8 +2517,12 @@ async function handleSubscriptionDeleted(subscription) {
     console.log('📋 Subscription deleted:', subscription.id);
     
     try {
+        // Stripe subscription IDs already start with "sub_", so use it directly
+        const subscriptionId = subscription.id.startsWith('sub_') 
+            ? subscription.id 
+            : `sub_${subscription.id}`;
         // Update status to canceled instead of deleting
-        await admin.firestore().collection('subscriptions').doc(`sub_${subscription.id}`).update({
+        await admin.firestore().collection('subscriptions').doc(subscriptionId).update({
             status: 'canceled',
             canceledAt: new Date().toISOString(),
             updatedAt: new Date().toISOString()
@@ -2484,7 +2565,11 @@ async function handleInvoicePaymentSucceeded(invoice) {
             // Update subscription status to active if it was past_due
             const subscription = await stripe.subscriptions.retrieve(invoice.subscription);
             if (subscription.status === 'active') {
-                await admin.firestore().collection('subscriptions').doc(`sub_${subscription.id}`).update({
+                // Stripe subscription IDs already start with "sub_", so use it directly
+                const subscriptionId = subscription.id.startsWith('sub_') 
+                    ? subscription.id 
+                    : `sub_${subscription.id}`;
+                await admin.firestore().collection('subscriptions').doc(subscriptionId).update({
                     status: 'active',
                     updatedAt: new Date().toISOString()
                 });
@@ -2504,7 +2589,11 @@ async function handleInvoicePaymentFailed(invoice) {
             // Update subscription status to past_due
             const subscription = await stripe.subscriptions.retrieve(invoice.subscription);
             if (subscription.status === 'past_due') {
-                await admin.firestore().collection('subscriptions').doc(`sub_${subscription.id}`).update({
+                // Stripe subscription IDs already start with "sub_", so use it directly
+                const subscriptionId = subscription.id.startsWith('sub_') 
+                    ? subscription.id 
+                    : `sub_${subscription.id}`;
+                await admin.firestore().collection('subscriptions').doc(subscriptionId).update({
                     status: 'past_due',
                     updatedAt: new Date().toISOString()
                 });
