@@ -2009,9 +2009,14 @@ app.post('/api/modify-subscription', async (req, res) => {
                     const invoice = await stripe.invoices.retrieve(updatedSubscription.latest_invoice, {
                         expand: ['lines.data']
                     });
-                    console.log('Latest invoice status:', invoice.status);
-                    console.log('Invoice amount:', invoice.amount_due);
-                    console.log('Invoice has proration date:', !!invoice.subscription_proration_date);
+                    console.log('📋 Invoice details:', {
+                        id: invoice.id,
+                        status: invoice.status,
+                        amount_due: invoice.amount_due,
+                        amount_paid: invoice.amount_paid,
+                        has_proration_date: !!invoice.subscription_proration_date,
+                        attempt_count: invoice.attempt_count
+                    });
                     
                     // Check if this is a proration invoice:
                     // 1. Has subscription_proration_date, OR
@@ -2021,9 +2026,16 @@ app.post('/api/modify-subscription', async (req, res) => {
                                        (invoice.lines?.data?.some(line => line.proration === true)) ||
                                        (invoice.amount_due !== 0 && (invoice.status === 'open' || invoice.status === 'draft'));
                     
+                    console.log('📋 Has proration:', hasProration);
+                    
                     // Check if invoice needs payment
                     if (invoice.status === 'paid') {
                         console.log('✅ Proration invoice already paid automatically by Stripe');
+                    } else if (invoice.status === 'void' || invoice.status === 'uncollectible') {
+                        console.warn('⚠️ Proration invoice is void/uncollectible, cannot be paid');
+                    } else if (invoice.status === 'open' && invoice.attempt_count > 0) {
+                        console.warn('⚠️ Invoice payment was attempted and failed. Status:', invoice.status);
+                        console.warn('⚠️ Stripe will retry automatically. We will not attempt manual payment.');
                     } else if (hasProration && (invoice.status === 'open' || invoice.status === 'draft')) {
                         console.log('💰 Proration invoice detected, paying immediately...');
                         console.log('Invoice amount to pay:', invoice.amount_due / 100, 'USD');
