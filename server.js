@@ -1201,9 +1201,9 @@ app.post('/api/cancel-subscription', async (req, res) => {
         let subscription;
         try {
             subscription = await stripe.subscriptions.update(subscription_id, {
-                cancel_at_period_end: true
-            });
-            console.log('Subscription cancelled:', subscription.id);
+            cancel_at_period_end: true
+        });
+        console.log('Subscription cancelled:', subscription.id);
         } catch (stripeError) {
             // Provide more helpful error message
             if (stripeError.type === 'StripeInvalidRequestError' && stripeError.code === 'resource_missing') {
@@ -1660,7 +1660,7 @@ app.post('/api/create-subscription', async (req, res) => {
                 }
             }
             
-            const stripeSubscription = await stripe.subscriptions.create(subscriptionData);
+            let stripeSubscription = await stripe.subscriptions.create(subscriptionData);
             
             // If subscription was created with pending payment, pay the invoice using existing payment intent
             if (payment_intent_id && stripeSubscription.latest_invoice) {
@@ -1672,6 +1672,11 @@ app.post('/api/create-subscription', async (req, res) => {
                             payment_method: (await stripe.paymentIntents.retrieve(payment_intent_id)).payment_method
                         });
                         console.log('Invoice paid successfully using existing payment intent');
+                        
+                        // IMPORTANT: Refresh subscription to get updated status after invoice payment
+                        // This ensures we save the correct "active" status to Firebase
+                        stripeSubscription = await stripe.subscriptions.retrieve(stripeSubscription.id);
+                        console.log('✅ Refreshed subscription status after invoice payment:', stripeSubscription.status);
                     }
                 } catch (invoiceError) {
                     console.error('Error paying invoice with existing payment intent:', invoiceError);
@@ -1767,7 +1772,14 @@ app.post('/api/create-subscription', async (req, res) => {
                 }
             } catch (firebaseError) {
                 console.error('❌ Failed to save subscription to Firebase:', firebaseError);
+                console.error('❌ Firebase error details:', {
+                    message: firebaseError.message,
+                    code: firebaseError.code,
+                    subscriptionId: `sub_${stripeSubscription.id}`,
+                    userId: user_id
+                });
                 // Don't fail the subscription creation if Firebase save fails
+                // Webhook will create it as a backup
             }
             
             // Send subscription confirmation email with cancellation instructions
@@ -2025,12 +2037,12 @@ app.post('/api/stripe-webhook', express.raw({type: 'application/json'}), async (
         }
     } else {
         // Verify webhook signature when secret is available
-        try {
-            event = stripe.webhooks.constructEvent(req.body, sig, endpointSecret);
-            console.log(`📡 Received webhook: ${event.type}`);
-        } catch (err) {
-            console.log(`❌ Webhook signature verification failed:`, err.message);
-            return res.status(400).send(`Webhook Error: ${err.message}`);
+    try {
+        event = stripe.webhooks.constructEvent(req.body, sig, endpointSecret);
+        console.log(`📡 Received webhook: ${event.type}`);
+    } catch (err) {
+        console.log(`❌ Webhook signature verification failed:`, err.message);
+        return res.status(400).send(`Webhook Error: ${err.message}`);
         }
     }
 
@@ -2208,31 +2220,48 @@ async function handleSubscriptionCreated(subscription) {
     console.log('📋 Subscription created:', subscription.id);
     
     try {
-        // Get customer email
-        const customer = await stripe.customers.retrieve(subscription.customer);
+        // Try to get userId from subscription metadata first (most reliable)
+        let userId = subscription.metadata?.userId;
         
-        // Find userId
-        const userQuery = await admin.firestore().collection('users')
-            .where('email', '==', customer.email)
-            .limit(1)
-            .get();
-        
-        if (userQuery.empty) {
-            console.log('⚠️ No user found for customer:', customer.email);
-            return;
+        // If not in metadata, try to find by customer email
+        if (!userId) {
+            console.log('⚠️ userId not found in metadata, trying email lookup...');
+            const customer = await stripe.customers.retrieve(subscription.customer);
+            
+            const userQuery = await admin.firestore().collection('users')
+                .where('email', '==', customer.email)
+                .limit(1)
+                .get();
+            
+            if (userQuery.empty) {
+                console.log('⚠️ No user found for customer:', customer.email);
+                console.log('⚠️ Subscription will not be created in Firebase. Please ensure userId is in subscription metadata.');
+                return;
+            }
+            
+            userId = userQuery.docs[0].id;
         }
         
-        const userId = userQuery.docs[0].id;
+        console.log('✅ Found userId:', userId);
+        console.log('📋 Subscription metadata:', JSON.stringify(subscription.metadata));
         
-        // Create subscription in Firebase
+        // Check if subscription already exists in Firebase
+        const subscriptionId = `sub_${subscription.id}`;
+        const existingSub = await admin.firestore().collection('subscriptions').doc(subscriptionId).get();
+        
+        if (existingSub.exists) {
+            console.log('⚠️ Subscription already exists in Firebase, updating...');
+        }
+        
+        // Create or update subscription in Firebase
         const subscriptionData = {
-            id: `sub_${subscription.id}`,
+            id: subscriptionId,
             userId: userId,
             planType: subscription.metadata?.planType || 'unknown',
             billingCycle: subscription.metadata?.billingCycle || 'monthly',
             status: subscription.status,
             stripeSubscriptionId: subscription.id,
-            stripeCustomerId: subscription.customer,
+            stripeCustomerId: typeof subscription.customer === 'string' ? subscription.customer : subscription.customer.id,
             currentPeriodStart: new Date(subscription.current_period_start * 1000).toISOString(),
             currentPeriodEnd: new Date(subscription.current_period_end * 1000).toISOString(),
             cancelAtPeriodEnd: subscription.cancel_at_period_end || false,
@@ -2241,8 +2270,8 @@ async function handleSubscriptionCreated(subscription) {
             updatedAt: new Date(subscription.updated * 1000).toISOString()
         };
         
-        await admin.firestore().collection('subscriptions').doc(`sub_${subscription.id}`).set(subscriptionData);
-        console.log('✅ Subscription created in Firebase');
+        await admin.firestore().collection('subscriptions').doc(subscriptionId).set(subscriptionData);
+        console.log('✅ Subscription saved to Firebase:', subscriptionId);
         
         // Create financial record for tax compliance
         try {
