@@ -1688,6 +1688,20 @@ app.post('/api/create-subscription', async (req, res) => {
                 try {
                     stripeSubscription = await stripe.subscriptions.retrieve(stripeSubscription.id);
                     console.log('✅ Refreshed subscription status:', stripeSubscription.status);
+                    
+                    // Ensure payment method is set as default for future invoices (prorations, renewals)
+                    if (paymentMethodId) {
+                        try {
+                            await stripe.customers.update(customer.id, {
+                                invoice_settings: {
+                                    default_payment_method: paymentMethodId
+                                }
+                            });
+                            console.log('✅ Set payment method as default for future invoices');
+                        } catch (pmError) {
+                            console.warn('⚠️ Failed to set payment method as default:', pmError.message);
+                        }
+                    }
                 } catch (refreshError) {
                     console.error('❌ Failed to refresh subscription:', refreshError);
                     // Continue with original subscription data
@@ -1711,6 +1725,20 @@ app.post('/api/create-subscription', async (req, res) => {
                             payment_method: paymentMethodId
                         });
                         console.log('✅ Invoice paid successfully - subscription should now be active');
+                        
+                        // IMPORTANT: Set payment method as default for future invoices (prorations, renewals, etc.)
+                        // This ensures Stripe can automatically pay future invoices
+                        try {
+                            await stripe.customers.update(customer.id, {
+                                invoice_settings: {
+                                    default_payment_method: paymentMethodId
+                                }
+                            });
+                            console.log('✅ Set payment method as default for future invoices');
+                        } catch (pmError) {
+                            console.warn('⚠️ Failed to set payment method as default:', pmError.message);
+                            // Don't fail if this doesn't work, but log it
+                        }
                         
                         // IMPORTANT: Refresh subscription to get updated status after invoice payment
                         stripeSubscription = await stripe.subscriptions.retrieve(stripeSubscription.id);
@@ -2002,8 +2030,10 @@ app.post('/api/modify-subscription', async (req, res) => {
             
             console.log('Subscription updated successfully:', updatedSubscription.id);
             console.log('📋 Stripe returned metadata:', JSON.stringify(updatedSubscription.metadata));
+            console.log('📋 Latest invoice ID:', updatedSubscription.latest_invoice);
             
-            // If proration was created, pay the invoice immediately
+            // If proration was created, check and pay the invoice immediately
+            // Note: Stripe may have already attempted automatic payment, so we need to check the status
             if (updatedSubscription.latest_invoice) {
                 try {
                     const invoice = await stripe.invoices.retrieve(updatedSubscription.latest_invoice, {
