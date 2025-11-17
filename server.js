@@ -1619,26 +1619,10 @@ app.post('/api/create-subscription', async (req, res) => {
                 }
             };
             
-            // If we have a payment intent that was already paid, prevent duplicate charge
-            if (payment_intent_id) {
-                try {
-                    const paymentIntent = await stripe.paymentIntents.retrieve(payment_intent_id);
-                    console.log('Payment intent status:', paymentIntent.status);
-                    
-                    // If payment intent was already succeeded, use pending_if_incomplete to avoid double charge
-                    // Then we'll manually pay the invoice using the existing payment intent
-                    if (paymentIntent.status === 'succeeded') {
-                        console.log('Payment intent already succeeded, setting payment_behavior to pending_if_incomplete');
-                        subscriptionData.payment_behavior = 'pending_if_incomplete';
-                        subscriptionData.payment_settings = {
-                            payment_method_types: ['card'],
-                            save_default_payment_method: 'on_subscription'
-                        };
-                    }
-                } catch (piError) {
-                    console.error('Error checking payment intent status:', piError);
-                }
-            }
+            // Note: We don't set payment_behavior here because:
+            // 1. payment_behavior: 'pending_if_incomplete' is only valid for subscription updates, not creation
+            // 2. If payment intent already succeeded, we'll pay the invoice manually after subscription creation
+            // 3. The payment method is already attached to the customer and set as default (done earlier)
             
             // Add coupon if promo code was provided
             if (promo_code) {
