@@ -2066,12 +2066,52 @@ app.post('/api/modify-subscription', async (req, res) => {
                         
                         if (paymentMethodId) {
                             console.log('Using payment method:', paymentMethodId);
-                            const paidInvoice = await stripe.invoices.pay(invoice.id, {
-                                payment_method: paymentMethodId
-                            });
-                            console.log('✅ Proration invoice paid successfully');
-                            console.log('Paid invoice status:', paidInvoice.status);
-                            console.log('Paid invoice amount:', paidInvoice.amount_paid / 100, 'USD');
+                            try {
+                                const paidInvoice = await stripe.invoices.pay(invoice.id, {
+                                    payment_method: paymentMethodId
+                                });
+                                console.log('✅ Proration invoice paid successfully');
+                                console.log('Paid invoice status:', paidInvoice.status);
+                                console.log('Paid invoice amount:', paidInvoice.amount_paid / 100, 'USD');
+                            } catch (paymentError) {
+                                console.error('❌ Failed to pay proration invoice:', paymentError.message);
+                                console.error('❌ Payment error type:', paymentError.type);
+                                console.error('❌ Payment error code:', paymentError.code);
+                                
+                                // If card was declined, try to get more payment methods
+                                if (paymentError.type === 'StripeCardError') {
+                                    console.warn('⚠️ Card declined. Attempting to find alternative payment method...');
+                                    
+                                    // Try to get all payment methods and try the next one
+                                    const allPaymentMethods = await stripe.paymentMethods.list({
+                                        customer: customer.id,
+                                        type: 'card'
+                                    });
+                                    
+                                    if (allPaymentMethods.data.length > 1) {
+                                        // Try the next payment method
+                                        const alternativePaymentMethod = allPaymentMethods.data.find(pm => pm.id !== paymentMethodId);
+                                        if (alternativePaymentMethod) {
+                                            console.log('Trying alternative payment method:', alternativePaymentMethod.id);
+                                            try {
+                                                const paidInvoice = await stripe.invoices.pay(invoice.id, {
+                                                    payment_method: alternativePaymentMethod.id
+                                                });
+                                                console.log('✅ Proration invoice paid successfully with alternative payment method');
+                                            } catch (altError) {
+                                                console.error('❌ Alternative payment method also failed:', altError.message);
+                                                throw altError; // Re-throw to be caught by outer catch
+                                            }
+                                        } else {
+                                            throw paymentError; // Re-throw if no alternative
+                                        }
+                                    } else {
+                                        throw paymentError; // Re-throw if no alternatives
+                                    }
+                                } else {
+                                    throw paymentError; // Re-throw non-card errors
+                                }
+                            }
                         } else {
                             console.warn('⚠️ No payment method found, proration invoice not paid automatically');
                             console.warn('⚠️ Invoice will remain unpaid. Customer will need to pay manually or it will be retried.');
