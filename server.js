@@ -1662,25 +1662,72 @@ app.post('/api/create-subscription', async (req, res) => {
             
             let stripeSubscription = await stripe.subscriptions.create(subscriptionData);
             
-            // If subscription was created with pending payment, pay the invoice using existing payment intent
-            if (payment_intent_id && stripeSubscription.latest_invoice) {
+            console.log('Subscription created with status:', stripeSubscription.status);
+            
+            // If subscription is already active, just refresh to get latest data
+            if (stripeSubscription.status === 'active') {
+                console.log('✅ Subscription is already active, refreshing to get latest data...');
                 try {
-                    const invoice = await stripe.invoices.retrieve(stripeSubscription.latest_invoice);
+                    stripeSubscription = await stripe.subscriptions.retrieve(stripeSubscription.id);
+                    console.log('✅ Refreshed subscription status:', stripeSubscription.status);
+                } catch (refreshError) {
+                    console.error('❌ Failed to refresh subscription:', refreshError);
+                    // Continue with original subscription data
+                }
+            }
+            // If subscription was created with pending payment, pay the invoice using existing payment intent
+            else if (payment_intent_id && stripeSubscription.latest_invoice) {
+                try {
+                    // Get invoice ID (could be string or object)
+                    const invoiceId = typeof stripeSubscription.latest_invoice === 'string' 
+                        ? stripeSubscription.latest_invoice 
+                        : stripeSubscription.latest_invoice.id;
+                    
+                    const invoice = await stripe.invoices.retrieve(invoiceId);
+                    console.log('Invoice status:', invoice.status);
+                    
                     if (invoice.status === 'open' || invoice.status === 'draft') {
-                        console.log('Paying invoice with existing payment intent:', payment_intent_id);
-                        await stripe.invoices.pay(invoice.id, {
-                            payment_method: (await stripe.paymentIntents.retrieve(payment_intent_id)).payment_method
-                        });
-                        console.log('Invoice paid successfully using existing payment intent');
+                        // Get payment method from payment intent
+                        const paymentIntent = await stripe.paymentIntents.retrieve(payment_intent_id);
+                        const paymentMethodId = paymentIntent.payment_method;
                         
-                        // IMPORTANT: Refresh subscription to get updated status after invoice payment
-                        // This ensures we save the correct "active" status to Firebase
+                        if (!paymentMethodId) {
+                            console.warn('⚠️ No payment method found in payment intent, skipping invoice payment');
+                            // Still refresh subscription to get current status
+                            stripeSubscription = await stripe.subscriptions.retrieve(stripeSubscription.id);
+                        } else {
+                            console.log('Paying invoice with payment method:', paymentMethodId);
+                            await stripe.invoices.pay(invoiceId, {
+                                payment_method: paymentMethodId
+                            });
+                            console.log('✅ Invoice paid successfully using existing payment intent');
+                            
+                            // IMPORTANT: Refresh subscription to get updated status after invoice payment
+                            // This ensures we save the correct "active" status to Firebase
+                            stripeSubscription = await stripe.subscriptions.retrieve(stripeSubscription.id);
+                            console.log('✅ Refreshed subscription status after invoice payment:', stripeSubscription.status);
+                        }
+                    } else {
+                        console.log('Invoice already paid or in different state:', invoice.status);
+                        // Still refresh subscription to get latest status
                         stripeSubscription = await stripe.subscriptions.retrieve(stripeSubscription.id);
-                        console.log('✅ Refreshed subscription status after invoice payment:', stripeSubscription.status);
+                        console.log('✅ Refreshed subscription status:', stripeSubscription.status);
                     }
                 } catch (invoiceError) {
-                    console.error('Error paying invoice with existing payment intent:', invoiceError);
+                    console.error('❌ Error paying invoice with existing payment intent:', invoiceError);
+                    console.error('❌ Invoice error details:', {
+                        message: invoiceError.message,
+                        type: invoiceError.type,
+                        code: invoiceError.code
+                    });
                     // Continue - subscription is created, invoice will be paid on next attempt
+                    // Still try to refresh subscription to get current status
+                    try {
+                        stripeSubscription = await stripe.subscriptions.retrieve(stripeSubscription.id);
+                        console.log('✅ Refreshed subscription status (after invoice error):', stripeSubscription.status);
+                    } catch (refreshError) {
+                        console.error('❌ Failed to refresh subscription:', refreshError);
+                    }
                 }
             }
             
