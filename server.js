@@ -1627,8 +1627,13 @@ app.post('/api/create-subscription', async (req, res) => {
                 }
             };
             
-            // If payment intent already succeeded, we didn't set a default payment method
-            // So Stripe won't charge automatically. We'll pay the invoice manually after creation.
+            // If payment intent already succeeded, specify payment method but use send_invoice to prevent automatic charge
+            if (paymentIntentSucceeded && paymentMethodId) {
+                console.log('⚠️ Payment intent already succeeded - using send_invoice to prevent double charge');
+                subscriptionData.default_payment_method = paymentMethodId;
+                subscriptionData.collection_method = 'send_invoice';
+                subscriptionData.days_until_due = 0; // Invoice due immediately, but we'll pay it manually
+            }
             
             // Add coupon if promo code was provided
             if (promo_code) {
