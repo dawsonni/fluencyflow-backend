@@ -1692,12 +1692,19 @@ app.post('/api/create-subscription', async (req, res) => {
                     // Ensure payment method is set as default for future invoices (prorations, renewals)
                     if (paymentMethodId) {
                         try {
+                            // Set on customer
                             await stripe.customers.update(customer.id, {
                                 invoice_settings: {
                                     default_payment_method: paymentMethodId
                                 }
                             });
-                            console.log('✅ Set payment method as default for future invoices');
+                            console.log('✅ Set payment method as default on customer');
+                            
+                            // Also set on subscription itself (more reliable for prorations)
+                            await stripe.subscriptions.update(stripeSubscription.id, {
+                                default_payment_method: paymentMethodId
+                            });
+                            console.log('✅ Set payment method as default on subscription');
                         } catch (pmError) {
                             console.warn('⚠️ Failed to set payment method as default:', pmError.message);
                         }
@@ -1726,15 +1733,22 @@ app.post('/api/create-subscription', async (req, res) => {
                         });
                         console.log('✅ Invoice paid successfully - subscription should now be active');
                         
-                        // IMPORTANT: Set payment method as default for future invoices (prorations, renewals, etc.)
-                        // This ensures Stripe can automatically pay future invoices
+                        // IMPORTANT: Set payment method as default for customer AND subscription
+                        // This ensures Stripe can automatically pay future invoices (prorations, renewals, etc.)
                         try {
+                            // Set on customer
                             await stripe.customers.update(customer.id, {
                                 invoice_settings: {
                                     default_payment_method: paymentMethodId
                                 }
                             });
-                            console.log('✅ Set payment method as default for future invoices');
+                            console.log('✅ Set payment method as default on customer');
+                            
+                            // Also set on subscription itself (more reliable for prorations)
+                            await stripe.subscriptions.update(stripeSubscription.id, {
+                                default_payment_method: paymentMethodId
+                            });
+                            console.log('✅ Set payment method as default on subscription');
                         } catch (pmError) {
                             console.warn('⚠️ Failed to set payment method as default:', pmError.message);
                             // Don't fail if this doesn't work, but log it
@@ -1993,7 +2007,7 @@ app.post('/api/modify-subscription', async (req, res) => {
                     id: existingSubscription.items.data[0].id,
                     price: newPriceId,
                 }],
-                proration_behavior: 'create_prorations', // This handles proration automatically
+                proration_behavior: 'create_prorations', // This handles proration automatically (will be charged on next invoice)
                 metadata: {
                     planType: plan_type,
                     billingCycle: billing_cycle,
@@ -2032,147 +2046,9 @@ app.post('/api/modify-subscription', async (req, res) => {
             console.log('📋 Stripe returned metadata:', JSON.stringify(updatedSubscription.metadata));
             console.log('📋 Latest invoice ID:', updatedSubscription.latest_invoice);
             
-            // If proration was created, check and pay the invoice immediately
-            // Note: Stripe may have already attempted automatic payment, so we need to check the status
-            if (updatedSubscription.latest_invoice) {
-                try {
-                    const invoice = await stripe.invoices.retrieve(updatedSubscription.latest_invoice, {
-                        expand: ['lines.data']
-                    });
-                    console.log('📋 Invoice details:', {
-                        id: invoice.id,
-                        status: invoice.status,
-                        amount_due: invoice.amount_due,
-                        amount_paid: invoice.amount_paid,
-                        has_proration_date: !!invoice.subscription_proration_date,
-                        attempt_count: invoice.attempt_count
-                    });
-                    
-                    // Check if this is a proration invoice:
-                    // 1. Has subscription_proration_date, OR
-                    // 2. Has line items with proration: true, OR
-                    // 3. Amount is non-zero and invoice is open/draft
-                    const hasProration = invoice.subscription_proration_date || 
-                                       (invoice.lines?.data?.some(line => line.proration === true)) ||
-                                       (invoice.amount_due !== 0 && (invoice.status === 'open' || invoice.status === 'draft'));
-                    
-                    console.log('📋 Has proration:', hasProration);
-                    
-                    // Check if invoice needs payment
-                    if (invoice.status === 'paid') {
-                        console.log('✅ Proration invoice already paid automatically by Stripe');
-                    } else if (invoice.status === 'void' || invoice.status === 'uncollectible') {
-                        console.warn('⚠️ Proration invoice is void/uncollectible, cannot be paid');
-                    } else if (invoice.status === 'open' && invoice.attempt_count > 0) {
-                        console.warn('⚠️ Invoice payment was attempted and failed. Status:', invoice.status);
-                        console.warn('⚠️ Stripe will retry automatically. We will not attempt manual payment.');
-                    } else if (hasProration && (invoice.status === 'open' || invoice.status === 'draft')) {
-                        console.log('💰 Proration invoice detected, paying immediately...');
-                        console.log('Invoice amount to pay:', invoice.amount_due / 100, 'USD');
-                        
-                        // Get customer's default payment method
-                        const customerWithPayment = await stripe.customers.retrieve(customer.id, {
-                            expand: ['invoice_settings.default_payment_method']
-                        });
-                        
-                        let paymentMethodId = null;
-                        const defaultPaymentMethod = customerWithPayment.invoice_settings?.default_payment_method;
-                        
-                        if (defaultPaymentMethod) {
-                            paymentMethodId = typeof defaultPaymentMethod === 'string' 
-                                ? defaultPaymentMethod 
-                                : defaultPaymentMethod.id;
-                        } else {
-                            // If no default payment method, try to get one from the subscription
-                            const subscriptionWithPayment = await stripe.subscriptions.retrieve(updatedSubscription.id, {
-                                expand: ['default_payment_method']
-                            });
-                            
-                            if (subscriptionWithPayment.default_payment_method) {
-                                paymentMethodId = typeof subscriptionWithPayment.default_payment_method === 'string'
-                                    ? subscriptionWithPayment.default_payment_method
-                                    : subscriptionWithPayment.default_payment_method.id;
-                            } else {
-                                // Last resort: get the first payment method attached to the customer
-                                const paymentMethods = await stripe.paymentMethods.list({
-                                    customer: customer.id,
-                                    type: 'card',
-                                    limit: 1
-                                });
-                                
-                                if (paymentMethods.data.length > 0) {
-                                    paymentMethodId = paymentMethods.data[0].id;
-                                }
-                            }
-                        }
-                        
-                        if (paymentMethodId) {
-                            console.log('Using payment method:', paymentMethodId);
-                            try {
-                                const paidInvoice = await stripe.invoices.pay(invoice.id, {
-                                    payment_method: paymentMethodId
-                                });
-                                console.log('✅ Proration invoice paid successfully');
-                                console.log('Paid invoice status:', paidInvoice.status);
-                                console.log('Paid invoice amount:', paidInvoice.amount_paid / 100, 'USD');
-                            } catch (paymentError) {
-                                console.error('❌ Failed to pay proration invoice:', paymentError.message);
-                                console.error('❌ Payment error type:', paymentError.type);
-                                console.error('❌ Payment error code:', paymentError.code);
-                                
-                                // If card was declined, try to get more payment methods
-                                if (paymentError.type === 'StripeCardError') {
-                                    console.warn('⚠️ Card declined. Attempting to find alternative payment method...');
-                                    
-                                    // Try to get all payment methods and try the next one
-                                    const allPaymentMethods = await stripe.paymentMethods.list({
-                                        customer: customer.id,
-                                        type: 'card'
-                                    });
-                                    
-                                    if (allPaymentMethods.data.length > 1) {
-                                        // Try the next payment method
-                                        const alternativePaymentMethod = allPaymentMethods.data.find(pm => pm.id !== paymentMethodId);
-                                        if (alternativePaymentMethod) {
-                                            console.log('Trying alternative payment method:', alternativePaymentMethod.id);
-                                            try {
-                                                const paidInvoice = await stripe.invoices.pay(invoice.id, {
-                                                    payment_method: alternativePaymentMethod.id
-                                                });
-                                                console.log('✅ Proration invoice paid successfully with alternative payment method');
-                                            } catch (altError) {
-                                                console.error('❌ Alternative payment method also failed:', altError.message);
-                                                throw altError; // Re-throw to be caught by outer catch
-                                            }
-                                        } else {
-                                            throw paymentError; // Re-throw if no alternative
-                                        }
-                                    } else {
-                                        throw paymentError; // Re-throw if no alternatives
-                                    }
-                                } else {
-                                    throw paymentError; // Re-throw non-card errors
-                                }
-                            }
-                        } else {
-                            console.warn('⚠️ No payment method found, proration invoice not paid automatically');
-                            console.warn('⚠️ Invoice will remain unpaid. Customer will need to pay manually or it will be retried.');
-                        }
-                    } else if (invoice.amount_due === 0) {
-                        console.log('ℹ️ Invoice has zero amount due (downgrade or credit), no payment needed');
-                    } else {
-                        console.log('ℹ️ Invoice status:', invoice.status, '- not a proration invoice or already processed');
-                    }
-                } catch (invoiceError) {
-                    console.error('❌ Error handling proration invoice:', invoiceError);
-                    console.error('❌ Invoice error details:', {
-                        message: invoiceError.message,
-                        type: invoiceError.type,
-                        code: invoiceError.code
-                    });
-                    // Don't fail the subscription update if invoice payment fails
-                }
-            }
+            // Note: With proration_behavior: 'create_prorations', Stripe will add prorations to the next invoice
+            // rather than charging immediately. This is the desired behavior - prorations will be charged
+            // on the next billing date along with the regular subscription charge.
             
             // Update customer metadata
             await stripe.customers.update(customer.id, {
