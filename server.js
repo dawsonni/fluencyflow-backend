@@ -1014,9 +1014,14 @@ app.get('/api/current-subscription', async (req, res) => {
             const stripeSubscription = subscriptions.data[0];
             console.log('Found real Stripe subscription:', stripeSubscription.id);
             
+            // Stripe subscription IDs already start with "sub_", so use it directly
+            const subscriptionId = stripeSubscription.id.startsWith('sub_') 
+                ? stripeSubscription.id 
+                : `sub_${stripeSubscription.id}`;
+            
             // Convert Stripe subscription to our format
             const subscription = {
-                id: `sub_${stripeSubscription.id}`,
+                id: subscriptionId,
                 userId: userId,
                 stripeSubscriptionId: stripeSubscription.id,
                 stripeCustomerId: customer.id,
@@ -1732,9 +1737,14 @@ app.post('/api/create-subscription', async (req, res) => {
             
             console.log('Created real Stripe subscription:', stripeSubscription.id);
             
+            // Stripe subscription IDs already start with "sub_", so use it directly
+            const subscriptionId = stripeSubscription.id.startsWith('sub_') 
+                ? stripeSubscription.id 
+                : `sub_${stripeSubscription.id}`;
+            
             // Convert Stripe subscription to our format
             const subscription = {
-                id: `sub_${stripeSubscription.id}`,
+                id: subscriptionId,
                 userId: user_id,
                 stripeSubscriptionId: stripeSubscription.id,
                 stripeCustomerId: customer.id,
@@ -1759,10 +1769,6 @@ app.post('/api/create-subscription', async (req, res) => {
             
             // Save subscription to Firebase
             try {
-                // Stripe subscription IDs already start with "sub_", so use it directly
-                const subscriptionId = stripeSubscription.id.startsWith('sub_') 
-                    ? stripeSubscription.id 
-                    : `sub_${stripeSubscription.id}`;
                 await admin.firestore().collection('subscriptions').doc(subscriptionId).set({
                     id: subscriptionId,
                     userId: user_id,
@@ -2372,7 +2378,8 @@ async function handleSubscriptionCreated(subscription) {
             updatedAt: new Date(subscription.updated * 1000).toISOString()
         };
         
-        await admin.firestore().collection('subscriptions').doc(subscriptionId).set(subscriptionData);
+        // Use set with merge to update if already exists (from direct creation) or create if new
+        await admin.firestore().collection('subscriptions').doc(subscriptionId).set(subscriptionData, { merge: true });
         console.log('✅ Subscription saved to Firebase:', subscriptionId);
         
         // Create financial record for tax compliance
