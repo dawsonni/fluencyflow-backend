@@ -2000,14 +2000,17 @@ app.post('/api/modify-subscription', async (req, res) => {
         
         console.log(`Modifying subscription to price ID: ${newPriceId}`);
         
-        // Update the subscription with the new plan
+        // Update the subscription with the new plan - SIMPLE APPROACH
         try {
+            // Build the update data - just the essentials
             const updateData = {
                 items: [{
                     id: existingSubscription.items.data[0].id,
                     price: newPriceId,
                 }],
-                proration_behavior: 'create_prorations', // This handles proration automatically (will be charged on next invoice)
+                // Use 'none' to prevent immediate proration charges
+                // Proration will be calculated and included in the next invoice automatically
+                proration_behavior: 'none',
                 metadata: {
                     planType: plan_type,
                     billingCycle: billing_cycle,
@@ -2021,7 +2024,6 @@ app.post('/api/modify-subscription', async (req, res) => {
             // Add coupon if promo code was provided
             if (promo_code) {
                 try {
-                    // Get the promotion code to find the coupon
                     const promotionCodes = await stripe.promotionCodes.list({
                         code: promo_code,
                         active: true,
@@ -2033,68 +2035,24 @@ app.post('/api/modify-subscription', async (req, res) => {
                         console.log(`Applying coupon ${updateData.coupon} to subscription modification`);
                     }
                 } catch (couponError) {
-                    console.error('Error applying coupon to subscription modification:', couponError);
-                    // Continue without coupon if there's an error
+                    console.error('Error applying coupon:', couponError);
+                    // Continue without coupon
                 }
             }
             
-            console.log('📋 Sending update to Stripe with metadata:', JSON.stringify(updateData.metadata));
+            console.log('📋 Updating subscription to:', plan_type, billing_cycle);
             
+            // Update the subscription - that's it, let Stripe handle the rest
             const updatedSubscription = await stripe.subscriptions.update(existingSubscription.id, updateData);
             
-            console.log('Subscription updated successfully:', updatedSubscription.id);
-            console.log('📋 Stripe returned metadata:', JSON.stringify(updatedSubscription.metadata));
-            console.log('📋 Latest invoice ID:', updatedSubscription.latest_invoice);
+            console.log('✅ Subscription updated successfully:', updatedSubscription.id);
             
-            // Note: With proration_behavior: 'create_prorations', Stripe creates an immediate invoice for proration
-            // If this invoice isn't paid, the subscription goes "past due". We need to check if there's an immediate
-            // proration invoice and void it, since we want prorations on the next invoice instead.
-            if (updatedSubscription.latest_invoice) {
-                try {
-                    const invoice = await stripe.invoices.retrieve(updatedSubscription.latest_invoice, {
-                        expand: ['lines.data']
-                    });
-                    
-                    // Check if this is an immediate proration invoice (has proration date and is open/draft)
-                    const isProrationInvoice = invoice.subscription_proration_date || 
-                                             (invoice.lines?.data?.some(line => line.proration === true));
-                    
-                    if (isProrationInvoice && (invoice.status === 'open' || invoice.status === 'draft')) {
-                        console.log('⚠️ Immediate proration invoice created. Voiding it so proration goes to next invoice...');
-                        console.log('Invoice amount:', invoice.amount_due / 100, 'USD');
-                        
-                        // Void the immediate invoice - this prevents "past due" status
-                        // The proration will be included in the next invoice automatically
-                        await stripe.invoices.voidInvoice(invoice.id);
-                        console.log('✅ Voided immediate proration invoice - subscription will remain active');
-                        console.log('ℹ️ Proration will be included in the next invoice (as shown in upcoming invoice preview)');
-                    } else if (invoice.status === 'paid') {
-                        console.log('✅ Proration invoice already paid (unexpected - should have been voided)');
-                    } else {
-                        console.log('ℹ️ Latest invoice is not a proration invoice or already processed:', invoice.status);
-                    }
-                } catch (invoiceError) {
-                    console.error('❌ Error handling proration invoice:', invoiceError);
-                    // Don't fail the subscription update if invoice handling fails
-                }
-            }
-            
-            // Update customer metadata
-            await stripe.customers.update(customer.id, {
-                metadata: {
-                    ...customer.metadata,
-                    planType: plan_type,
-                    billingCycle: billing_cycle,
-                    lastModified: new Date().toISOString()
-                }
-            });
-            
-            // IMPORTANT: Directly update Firebase since webhook may not fire reliably
+            // Update Firebase directly
             try {
-                // Stripe subscription IDs already start with "sub_", so use it directly
                 const subscriptionId = updatedSubscription.id.startsWith('sub_') 
                     ? updatedSubscription.id 
                     : `sub_${updatedSubscription.id}`;
+                    
                 await admin.firestore().collection('subscriptions').doc(subscriptionId).update({
                     planType: plan_type,
                     billingCycle: billing_cycle,
@@ -2104,13 +2062,11 @@ app.post('/api/modify-subscription', async (req, res) => {
                     cancelAtPeriodEnd: updatedSubscription.cancel_at_period_end || false,
                     updatedAt: new Date().toISOString()
                 });
-                console.log('✅ Firebase updated directly with new plan type:', plan_type);
+                console.log('✅ Firebase updated with new plan type:', plan_type);
             } catch (firebaseError) {
-                console.error('❌ Failed to update Firebase directly:', firebaseError);
-                // Don't fail the request if Firebase update fails
+                console.error('❌ Failed to update Firebase:', firebaseError);
+                // Don't fail the request
             }
-            
-            console.log('✅ Subscription modified successfully:', updatedSubscription.id);
             
             res.json({
                 success: true,
@@ -2120,16 +2076,15 @@ app.post('/api/modify-subscription', async (req, res) => {
                     plan_type: plan_type,
                     billing_cycle: billing_cycle,
                     current_period_start: updatedSubscription.current_period_start,
-                    current_period_end: updatedSubscription.current_period_end,
-                    proration_behavior: 'create_prorations'
+                    current_period_end: updatedSubscription.current_period_end
                 }
             });
             
         } catch (updateError) {
-            console.error('Error updating subscription:', updateError);
-            res.status(500).json({ 
+            console.error('❌ Error updating subscription:', updateError);
+            res.status(500).json({
                 error: 'Failed to update subscription',
-                details: updateError.message 
+                details: updateError.message
             });
         }
         
@@ -2457,9 +2412,15 @@ async function handleSubscriptionUpdated(subscription) {
             planType: subscription.metadata?.planType || 'unknown',
             billingCycle: subscription.metadata?.billingCycle || 'monthly',
             cancelAtPeriodEnd: subscription.cancel_at_period_end || false,
-            currentPeriodStart: new Date(subscription.current_period_start * 1000).toISOString(),
-            currentPeriodEnd: new Date(subscription.current_period_end * 1000).toISOString(),
-            updatedAt: new Date(subscription.updated * 1000).toISOString()
+            currentPeriodStart: subscription.current_period_start 
+                ? new Date(subscription.current_period_start * 1000).toISOString()
+                : new Date().toISOString(),
+            currentPeriodEnd: subscription.current_period_end 
+                ? new Date(subscription.current_period_end * 1000).toISOString()
+                : new Date().toISOString(),
+            updatedAt: subscription.updated 
+                ? new Date(subscription.updated * 1000).toISOString()
+                : new Date().toISOString()
         };
         
         // Add canceledAt timestamp if subscription is being canceled
