@@ -2046,9 +2046,38 @@ app.post('/api/modify-subscription', async (req, res) => {
             console.log('📋 Stripe returned metadata:', JSON.stringify(updatedSubscription.metadata));
             console.log('📋 Latest invoice ID:', updatedSubscription.latest_invoice);
             
-            // Note: With proration_behavior: 'create_prorations', Stripe will add prorations to the next invoice
-            // rather than charging immediately. This is the desired behavior - prorations will be charged
-            // on the next billing date along with the regular subscription charge.
+            // Note: With proration_behavior: 'create_prorations', Stripe creates an immediate invoice for proration
+            // If this invoice isn't paid, the subscription goes "past due". We need to check if there's an immediate
+            // proration invoice and void it, since we want prorations on the next invoice instead.
+            if (updatedSubscription.latest_invoice) {
+                try {
+                    const invoice = await stripe.invoices.retrieve(updatedSubscription.latest_invoice, {
+                        expand: ['lines.data']
+                    });
+                    
+                    // Check if this is an immediate proration invoice (has proration date and is open/draft)
+                    const isProrationInvoice = invoice.subscription_proration_date || 
+                                             (invoice.lines?.data?.some(line => line.proration === true));
+                    
+                    if (isProrationInvoice && (invoice.status === 'open' || invoice.status === 'draft')) {
+                        console.log('⚠️ Immediate proration invoice created. Voiding it so proration goes to next invoice...');
+                        console.log('Invoice amount:', invoice.amount_due / 100, 'USD');
+                        
+                        // Void the immediate invoice - this prevents "past due" status
+                        // The proration will be included in the next invoice automatically
+                        await stripe.invoices.voidInvoice(invoice.id);
+                        console.log('✅ Voided immediate proration invoice - subscription will remain active');
+                        console.log('ℹ️ Proration will be included in the next invoice (as shown in upcoming invoice preview)');
+                    } else if (invoice.status === 'paid') {
+                        console.log('✅ Proration invoice already paid (unexpected - should have been voided)');
+                    } else {
+                        console.log('ℹ️ Latest invoice is not a proration invoice or already processed:', invoice.status);
+                    }
+                } catch (invoiceError) {
+                    console.error('❌ Error handling proration invoice:', invoiceError);
+                    // Don't fail the subscription update if invoice handling fails
+                }
+            }
             
             // Update customer metadata
             await stripe.customers.update(customer.id, {
