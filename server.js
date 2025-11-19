@@ -1669,6 +1669,19 @@ app.post('/api/create-subscription', async (req, res) => {
                     console.error('Error attaching payment method:', pmError.message);
                     return res.status(500).json({ error: 'Failed to attach payment method' });
                 }
+            } else {
+                // If no payment method provided, check if customer has a default payment method
+                const customerWithPM = await stripe.customers.retrieve(customer.id, {
+                    expand: ['invoice_settings.default_payment_method']
+                });
+                
+                if (!customerWithPM.invoice_settings?.default_payment_method) {
+                    return res.status(400).json({ 
+                        error: 'No payment method provided and customer has no default payment method',
+                        details: 'Please provide a payment_method_id or ensure customer has a payment method on file'
+                    });
+                }
+                console.log('✅ Using customer\'s existing default payment method');
             }
             
             // Create subscription - simple and straightforward
