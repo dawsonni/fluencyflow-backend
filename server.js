@@ -1641,6 +1641,9 @@ app.post('/api/create-subscription', async (req, res) => {
                 items: [{
                     price: priceId,
                 }],
+                // Use 'none' to ensure any proration (if applicable) is deferred to next invoice
+                // This keeps behavior consistent with subscription modifications
+                proration_behavior: 'none',
                 metadata: {
                     userId: user_id,
                     planType: plan_type,
@@ -1650,12 +1653,12 @@ app.post('/api/create-subscription', async (req, res) => {
                 }
             };
             
-            // If payment intent already succeeded, specify payment method but use send_invoice to prevent automatic charge
+            // If payment intent already succeeded, use default_incomplete to prevent automatic charge
+            // We'll mark the invoice as paid using the existing payment intent
             if (paymentIntentSucceeded && paymentMethodId) {
-                console.log('⚠️ Payment intent already succeeded - using send_invoice to prevent double charge');
+                console.log('⚠️ Payment intent already succeeded - using default_incomplete to prevent double charge');
+                subscriptionData.payment_behavior = 'default_incomplete';
                 subscriptionData.default_payment_method = paymentMethodId;
-                subscriptionData.collection_method = 'send_invoice';
-                subscriptionData.days_until_due = 0; // Invoice due immediately, but we'll pay it manually
             }
             
             // Add coupon if promo code was provided
@@ -1714,9 +1717,9 @@ app.post('/api/create-subscription', async (req, res) => {
                     // Continue with original subscription data
                 }
             }
-            // If payment intent already succeeded, we didn't set default payment method
-            // So we need to manually pay the invoice to activate the subscription
-            else if (paymentIntentSucceeded && paymentMethodId && stripeSubscription.latest_invoice) {
+            // If payment intent already succeeded, mark the invoice as paid using the existing payment intent
+            // This links the invoice to the already-succeeded payment without charging again
+            else if (paymentIntentSucceeded && payment_intent_id && stripeSubscription.latest_invoice) {
                 try {
                     // Get invoice ID (could be string or object)
                     const invoiceId = typeof stripeSubscription.latest_invoice === 'string' 
@@ -1727,11 +1730,13 @@ app.post('/api/create-subscription', async (req, res) => {
                     console.log('Invoice status:', invoice.status);
                     
                     if (invoice.status === 'open' || invoice.status === 'draft') {
-                        console.log('Paying invoice with payment method from succeeded payment intent:', paymentMethodId);
+                        console.log('Marking invoice as paid using existing payment intent:', payment_intent_id);
+                        // Use payment_intent parameter to link invoice to already-succeeded payment intent
+                        // This doesn't charge again - it just marks the invoice as paid
                         await stripe.invoices.pay(invoiceId, {
-                            payment_method: paymentMethodId
+                            payment_intent: payment_intent_id
                         });
-                        console.log('✅ Invoice paid successfully - subscription should now be active');
+                        console.log('✅ Invoice marked as paid using existing payment intent - subscription should now be active');
                         
                         // IMPORTANT: Set payment method as default for customer AND subscription
                         // This ensures Stripe can automatically pay future invoices (prorations, renewals, etc.)
@@ -1764,7 +1769,7 @@ app.post('/api/create-subscription', async (req, res) => {
                         console.log('✅ Refreshed subscription status:', stripeSubscription.status);
                     }
                 } catch (invoiceError) {
-                    console.error('❌ Error paying invoice:', invoiceError);
+                    console.error('❌ Error marking invoice as paid:', invoiceError);
                     console.error('❌ Invoice error details:', {
                         message: invoiceError.message,
                         type: invoiceError.type,
