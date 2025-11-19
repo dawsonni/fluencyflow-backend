@@ -163,12 +163,20 @@ app.use((req, res, next) => {
     // Log POST requests for debugging
     if (req.method === 'POST') {
         console.log(`📥 POST ${req.originalUrl}`);
+        console.log(`📥 Content-Type: ${req.get('Content-Type')}`);
+        console.log(`📥 Content-Length: ${req.get('Content-Length')}`);
     }
     // Wrap JSON parser with error handling
     express.json()(req, res, (err) => {
         if (err) {
             console.error('❌ JSON parsing error:', err.message);
-            return res.status(400).json({ error: 'Invalid JSON in request body' });
+            console.error('❌ Error type:', err.type);
+            console.error('❌ Error stack:', err.stack);
+            return res.status(400).json({ error: 'Invalid JSON in request body', details: err.message });
+        }
+        if (req.method === 'POST' && req.originalUrl === '/api/create-setup-intent') {
+            console.log(`✅ JSON parsed successfully for ${req.originalUrl}`);
+            console.log(`✅ Parsed body:`, JSON.stringify(req.body));
         }
         next();
     });
@@ -1455,6 +1463,7 @@ app.post('/api/create-payment-intent', async (req, res) => {
 
 // Create setup intent endpoint (for collecting payment methods for subscriptions)
 app.post('/api/create-setup-intent', async (req, res) => {
+    console.log('🚀 CREATE-SETUP-INTENT HANDLER CALLED');
     try {
         // Wait for Stripe to be initialized
         while (!stripeInitialized) {
