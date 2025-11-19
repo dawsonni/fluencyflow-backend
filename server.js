@@ -1583,14 +1583,10 @@ app.post('/api/create-subscription', async (req, res) => {
             console.log(`Creating Stripe subscription with price ID: ${priceId}`);
             
             // Attach payment method if provided
-            let paymentIntentSucceeded = false;
-            let paymentMethodId = null;
-            
             if (payment_intent_id) {
                 try {
                     const paymentIntent = await stripe.paymentIntents.retrieve(payment_intent_id);
-                    paymentIntentSucceeded = paymentIntent.status === 'succeeded';
-                    paymentMethodId = paymentIntent.payment_method;
+                    const paymentMethodId = paymentIntent.payment_method;
                     
                     if (paymentMethodId) {
                         await stripe.paymentMethods.attach(paymentMethodId, { customer: customer.id });
@@ -1636,22 +1632,6 @@ app.post('/api/create-subscription', async (req, res) => {
             
             const stripeSubscription = await stripe.subscriptions.create(subscriptionData);
             console.log('✅ Subscription created:', stripeSubscription.id, 'Status:', stripeSubscription.status);
-            
-            // If payment intent already succeeded, refund it (subscription charge is the real one)
-            if (paymentIntentSucceeded && payment_intent_id) {
-                try {
-                    const paymentIntent = await stripe.paymentIntents.retrieve(payment_intent_id);
-                    if (paymentIntent.charges?.data?.[0]?.id) {
-                        await stripe.refunds.create({
-                            charge: paymentIntent.charges.data[0].id,
-                            reason: 'duplicate'
-                        });
-                        console.log('✅ Refunded payment intent charge (subscription charge is authoritative)');
-                    }
-                } catch (refundError) {
-                    console.error('❌ Failed to refund payment intent:', refundError.message);
-                }
-            }
             
             console.log('Stripe subscription created successfully:', stripeSubscription.id);
             console.log('Subscription status:', stripeSubscription.status);
