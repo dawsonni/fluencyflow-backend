@@ -1450,41 +1450,49 @@ app.post('/api/create-setup-intent', async (req, res) => {
             await new Promise(resolve => setTimeout(resolve, 100));
         }
         
+        console.log('📋 Create setup intent request body:', JSON.stringify(req.body));
+        
         const { user_email } = req.body;
         
-        console.log('Creating setup intent for:', user_email);
+        if (!user_email) {
+            console.error('❌ Missing user_email in create-setup-intent request');
+            return res.status(400).json({ error: 'user_email is required' });
+        }
+        
+        console.log('✅ Creating setup intent for:', user_email);
         
         // Create or find customer
         let customer;
-        if (user_email) {
-            try {
-                const existingCustomers = await stripe.customers.list({
+        try {
+            const existingCustomers = await stripe.customers.list({
+                email: user_email,
+                limit: 1
+            });
+            
+            if (existingCustomers.data.length > 0) {
+                customer = existingCustomers.data[0];
+                console.log('Found existing customer for setup intent:', customer.id);
+            } else {
+                customer = await stripe.customers.create({
                     email: user_email,
-                    limit: 1
+                    metadata: {
+                        source: 'setup_intent_creation'
+                    }
                 });
-                
-                if (existingCustomers.data.length > 0) {
-                    customer = existingCustomers.data[0];
-                    console.log('Found existing customer for setup intent:', customer.id);
-                } else {
-                    customer = await stripe.customers.create({
-                        email: user_email,
-                        metadata: {
-                            source: 'setup_intent_creation'
-                        }
-                    });
-                    console.log('Created new customer for setup intent:', customer.id);
-                }
-            } catch (customerError) {
-                console.error('Error with customer in setup intent:', customerError);
+                console.log('Created new customer for setup intent:', customer.id);
             }
+        } catch (customerError) {
+            console.error('Error with customer in setup intent:', customerError);
+            return res.status(500).json({ error: 'Failed to create/find customer', details: customerError.message });
         }
         
         const setupIntent = await stripe.setupIntents.create({
-            customer: customer?.id,
+            customer: customer.id,
             payment_method_types: ['card'],
             usage: 'off_session'
         });
+        
+        console.log('✅ Setup intent created:', setupIntent.id);
         
         res.json({
             id: setupIntent.id,
