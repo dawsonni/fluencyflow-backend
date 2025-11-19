@@ -160,7 +160,18 @@ app.use((req, res, next) => {
     if (req.originalUrl === '/api/stripe-webhook') {
         return next();
     }
-    return express.json()(req, res, next);
+    // Log POST requests for debugging
+    if (req.method === 'POST') {
+        console.log(`📥 POST ${req.originalUrl}`);
+    }
+    // Wrap JSON parser with error handling
+    express.json()(req, res, (err) => {
+        if (err) {
+            console.error('❌ JSON parsing error:', err.message);
+            return res.status(400).json({ error: 'Invalid JSON in request body' });
+        }
+        next();
+    });
 });
 app.use(express.static('public')); // Serve static files
 
@@ -1450,12 +1461,21 @@ app.post('/api/create-setup-intent', async (req, res) => {
             await new Promise(resolve => setTimeout(resolve, 100));
         }
         
-        console.log('📋 Create setup intent request body:', JSON.stringify(req.body));
+        console.log('📋 Create setup intent request received');
+        console.log('📋 Request body:', JSON.stringify(req.body));
+        console.log('📋 Request headers:', JSON.stringify(req.headers));
+        
+        // Check if body exists
+        if (!req.body) {
+            console.error('❌ Request body is missing or empty');
+            return res.status(400).json({ error: 'Request body is required' });
+        }
         
         const { user_email } = req.body;
         
         if (!user_email) {
             console.error('❌ Missing user_email in create-setup-intent request');
+            console.error('❌ Request body keys:', Object.keys(req.body));
             return res.status(400).json({ error: 'user_email is required' });
         }
         
