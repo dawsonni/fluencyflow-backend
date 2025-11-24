@@ -160,23 +160,11 @@ app.use((req, res, next) => {
     if (req.originalUrl === '/api/stripe-webhook') {
         return next();
     }
-    // Log POST requests for debugging
-    if (req.method === 'POST') {
-        console.log(`📥 POST ${req.originalUrl}`);
-        console.log(`📥 Content-Type: ${req.get('Content-Type')}`);
-        console.log(`📥 Content-Length: ${req.get('Content-Length')}`);
-    }
     // Wrap JSON parser with error handling
     express.json()(req, res, (err) => {
         if (err) {
-            console.error('❌ JSON parsing error:', err.message);
-            console.error('❌ Error type:', err.type);
-            console.error('❌ Error stack:', err.stack);
-            return res.status(400).json({ error: 'Invalid JSON in request body', details: err.message });
-        }
-        if (req.method === 'POST' && req.originalUrl === '/api/create-setup-intent') {
-            console.log(`✅ JSON parsed successfully for ${req.originalUrl}`);
-            console.log(`✅ Parsed body:`, JSON.stringify(req.body));
+            console.error('JSON parsing error:', err.message);
+            return res.status(400).json({ error: 'Invalid JSON in request body' });
         }
         next();
     });
@@ -1397,32 +1385,17 @@ app.post('/api/create-payment-intent', async (req, res) => {
 
 // Create setup intent endpoint (for collecting payment methods for subscriptions)
 app.post('/api/create-setup-intent', async (req, res) => {
-    console.log('🚀 CREATE-SETUP-INTENT HANDLER CALLED');
     try {
         // Wait for Stripe to be initialized
         while (!stripeInitialized) {
             await new Promise(resolve => setTimeout(resolve, 100));
         }
         
-        console.log('📋 Create setup intent request received');
-        console.log('📋 Request body:', JSON.stringify(req.body));
-        console.log('📋 Request headers:', JSON.stringify(req.headers));
-        
-        // Check if body exists
-        if (!req.body) {
-            console.error('❌ Request body is missing or empty');
-            return res.status(400).json({ error: 'Request body is required' });
-        }
-        
         const { user_email } = req.body;
         
         if (!user_email) {
-            console.error('❌ Missing user_email in create-setup-intent request');
-            console.error('❌ Request body keys:', Object.keys(req.body));
             return res.status(400).json({ error: 'user_email is required' });
         }
-        
-        console.log('✅ Creating setup intent for:', user_email);
         
         // Create or find customer
         let customer;
@@ -1434,7 +1407,6 @@ app.post('/api/create-setup-intent', async (req, res) => {
             
             if (existingCustomers.data.length > 0) {
                 customer = existingCustomers.data[0];
-                console.log('Found existing customer for setup intent:', customer.id);
             } else {
                 customer = await stripe.customers.create({
                     email: user_email,
@@ -1442,11 +1414,10 @@ app.post('/api/create-setup-intent', async (req, res) => {
                         source: 'setup_intent_creation'
                     }
                 });
-                console.log('Created new customer for setup intent:', customer.id);
             }
         } catch (customerError) {
-            console.error('Error with customer in setup intent:', customerError);
-            return res.status(500).json({ error: 'Failed to create/find customer', details: customerError.message });
+            console.error('Error creating/finding customer for setup intent:', customerError);
+            return res.status(500).json({ error: 'Failed to create/find customer' });
         }
         
         const setupIntent = await stripe.setupIntents.create({
@@ -1454,8 +1425,6 @@ app.post('/api/create-setup-intent', async (req, res) => {
             payment_method_types: ['card'],
             usage: 'off_session'
         });
-        
-        console.log('✅ Setup intent created:', setupIntent.id);
         
         res.json({
             id: setupIntent.id,
@@ -1503,8 +1472,6 @@ app.post('/api/create-subscription', async (req, res) => {
         
         const { plan_type, billing_cycle, is_therapy_referral, user_id, user_email, payment_method_id, price_id, product_id, promo_code } = req.body;
         
-        console.log('Creating subscription:', { plan_type, billing_cycle, is_therapy_referral, user_id, user_email, payment_method_id });
-        
         if (!user_id) {
             return res.status(400).json({ error: 'User ID is required' });
         }
@@ -1520,13 +1487,10 @@ app.post('/api/create-subscription', async (req, res) => {
             
             if (existingCustomers.data.length > 0) {
                 customer = existingCustomers.data[0];
-                console.log('Found existing customer:', customer.id);
                 
                 // Update customer metadata to ensure userId is set
-                console.log('Customer metadata before update:', customer.metadata);
                 if (!customer.metadata || !customer.metadata.userId) {
-                    console.log('Updating customer metadata with userId:', user_id);
-                    const updatedCustomer = await stripe.customers.update(customer.id, {
+                    await stripe.customers.update(customer.id, {
                         metadata: {
                             ...customer.metadata,
                             userId: user_id,
@@ -1534,9 +1498,6 @@ app.post('/api/create-subscription', async (req, res) => {
                             is_therapy_referral: is_therapy_referral.toString()
                         }
                     });
-                    console.log('Customer metadata after update:', updatedCustomer.metadata);
-                } else {
-                    console.log('Customer already has userId in metadata:', customer.metadata.userId);
                 }
             } else {
                 // Create new customer
@@ -1548,17 +1509,14 @@ app.post('/api/create-subscription', async (req, res) => {
                         is_therapy_referral: is_therapy_referral.toString()
                     }
                 });
-                console.log('Created new customer:', customer.id);
             }
         } catch (customerError) {
-            console.error('Error with customer:', customerError);
+            console.error('Error creating/finding customer:', customerError);
             return res.status(500).json({ error: 'Failed to create/find customer' });
         }
         
         // Cancel any existing active subscriptions for this user before creating a new one
         try {
-            console.log('Checking for existing active subscriptions for user:', user_id);
-            
             // Find existing active subscriptions in Firebase
             const existingSubscriptions = await admin.firestore()
                 .collection('subscriptions')
@@ -1567,12 +1525,9 @@ app.post('/api/create-subscription', async (req, res) => {
                 .get();
             
             if (!existingSubscriptions.empty) {
-                console.log(`Found ${existingSubscriptions.docs.length} existing active subscriptions, canceling them...`);
-                
                 // Cancel each existing subscription in Stripe and update Firebase
                 for (const doc of existingSubscriptions.docs) {
                     const existingSub = doc.data();
-                    console.log(`Canceling existing subscription: ${existingSub.stripeSubscriptionId}`);
                     
                     try {
                         // Cancel in Stripe
@@ -1586,15 +1541,11 @@ app.post('/api/create-subscription', async (req, res) => {
                             cancelAtPeriodEnd: true,
                             updatedAt: new Date().toISOString()
                         });
-                        
-                        console.log(`✅ Canceled subscription: ${existingSub.stripeSubscriptionId}`);
                     } catch (cancelError) {
-                        console.error(`❌ Failed to cancel subscription ${existingSub.stripeSubscriptionId}:`, cancelError);
+                        console.error(`Failed to cancel subscription ${existingSub.stripeSubscriptionId}:`, cancelError);
                         // Continue with new subscription creation even if cancellation fails
                     }
                 }
-            } else {
-                console.log('No existing active subscriptions found');
             }
         } catch (existingSubError) {
             console.error('Error handling existing subscriptions:', existingSubError);
@@ -1652,10 +1603,9 @@ app.post('/api/create-subscription', async (req, res) => {
                         details: 'Please provide a payment_method_id or ensure customer has a payment method on file'
                     });
                 }
-                console.log('✅ Using customer\'s existing default payment method');
             }
             
-            // Create subscription - simple and straightforward
+            // Create subscription
             const subscriptionData = {
                 customer: customer.id,
                 items: [{ price: priceId }],
@@ -1691,10 +1641,6 @@ app.post('/api/create-subscription', async (req, res) => {
             }
             
             const stripeSubscription = await stripe.subscriptions.create(subscriptionData);
-            console.log('✅ Subscription created:', stripeSubscription.id, 'Status:', stripeSubscription.status);
-            
-            console.log('Stripe subscription created successfully:', stripeSubscription.id);
-            console.log('Subscription status:', stripeSubscription.status);
             
             // Store Stripe customer ID in Firebase user document for future lookups
             try {
@@ -1702,13 +1648,10 @@ app.post('/api/create-subscription', async (req, res) => {
                     stripeCustomerId: customer.id,
                     lastUpdated: new Date().toISOString()
                 });
-                console.log('Updated Firebase user with Stripe customer ID:', customer.id);
             } catch (firebaseUpdateError) {
-                console.log('Failed to update Firebase user with Stripe customer ID:', firebaseUpdateError.message);
+                console.error('Failed to update Firebase user with Stripe customer ID:', firebaseUpdateError.message);
                 // Don't fail the subscription creation if Firebase update fails
             }
-            
-            console.log('Created real Stripe subscription:', stripeSubscription.id);
             
             // Stripe subscription IDs already start with "sub_", so use it directly
             const subscriptionId = stripeSubscription.id.startsWith('sub_') 
@@ -1757,7 +1700,6 @@ app.post('/api/create-subscription', async (req, res) => {
                     createdAt: subscription.createdAt,
                     updatedAt: subscription.updatedAt
                 });
-                console.log('✅ Subscription saved to Firebase:', subscriptionId);
                 
                 // Create financial record for tax compliance
                 try {
@@ -1953,12 +1895,8 @@ app.post('/api/modify-subscription', async (req, res) => {
                 }
             }
             
-            console.log('📋 Updating subscription to:', plan_type, billing_cycle);
-            
-            // Update the subscription - that's it, let Stripe handle the rest
+            // Update the subscription
             const updatedSubscription = await stripe.subscriptions.update(existingSubscription.id, updateData);
-            
-            console.log('✅ Subscription updated successfully:', updatedSubscription.id);
             
             // Update Firebase directly
             try {
@@ -1975,9 +1913,8 @@ app.post('/api/modify-subscription', async (req, res) => {
                     cancelAtPeriodEnd: updatedSubscription.cancel_at_period_end || false,
                     updatedAt: new Date().toISOString()
                 });
-                console.log('✅ Firebase updated with new plan type:', plan_type);
             } catch (firebaseError) {
-                console.error('❌ Failed to update Firebase:', firebaseError);
+                console.error('Failed to update Firebase:', firebaseError);
                 // Don't fail the request
             }
             
@@ -2222,15 +2159,12 @@ async function cleanupExpiredFinancialRecords() {
 
 // Webhook Event Handlers
 async function handleSubscriptionCreated(subscription) {
-    console.log('📋 Subscription created:', subscription.id);
-    
     try {
         // Try to get userId from subscription metadata first (most reliable)
         let userId = subscription.metadata?.userId;
         
         // If not in metadata, try to find by customer email
         if (!userId) {
-            console.log('⚠️ userId not found in metadata, trying email lookup...');
             const customer = await stripe.customers.retrieve(subscription.customer);
             
             const userQuery = await admin.firestore().collection('users')
@@ -2239,16 +2173,12 @@ async function handleSubscriptionCreated(subscription) {
                 .get();
             
             if (userQuery.empty) {
-                console.log('⚠️ No user found for customer:', customer.email);
-                console.log('⚠️ Subscription will not be created in Firebase. Please ensure userId is in subscription metadata.');
+                console.warn('No user found for customer:', customer.email, '- Subscription will not be created in Firebase');
                 return;
             }
             
             userId = userQuery.docs[0].id;
         }
-        
-        console.log('✅ Found userId:', userId);
-        console.log('📋 Subscription metadata:', JSON.stringify(subscription.metadata));
         
         // Stripe subscription IDs already start with "sub_", so use it directly
         const subscriptionId = subscription.id.startsWith('sub_') 
@@ -2281,7 +2211,6 @@ async function handleSubscriptionCreated(subscription) {
         
         // Use set with merge to update if already exists (from direct creation) or create if new
         await admin.firestore().collection('subscriptions').doc(subscriptionId).set(subscriptionData, { merge: true });
-        console.log('✅ Subscription saved to Firebase:', subscriptionId);
         
         // Create financial record for tax compliance
         try {
@@ -2313,12 +2242,7 @@ async function handleSubscriptionCreated(subscription) {
 }
 
 async function handleSubscriptionUpdated(subscription) {
-    console.log('📋 Subscription updated:', subscription.id);
-    
     try {
-        // Log the raw metadata to see what Stripe is sending
-        console.log('📋 Stripe metadata received:', JSON.stringify(subscription.metadata));
-        
         // Update subscription in Firebase - ALWAYS include planType and billingCycle from metadata
         const subscriptionData = {
             status: subscription.status,
@@ -2341,8 +2265,6 @@ async function handleSubscriptionUpdated(subscription) {
             subscriptionData.canceledAt = new Date().toISOString();
         }
         
-        console.log(`📋 Updating subscription with planType: ${subscriptionData.planType}, billingCycle: ${subscriptionData.billingCycle}`);
-        
         // Stripe subscription IDs already start with "sub_", so use it directly
         const subscriptionId = subscription.id.startsWith('sub_') 
             ? subscription.id 
@@ -2350,7 +2272,6 @@ async function handleSubscriptionUpdated(subscription) {
         
         // Use set with merge to update or create if doesn't exist
         await admin.firestore().collection('subscriptions').doc(subscriptionId).set(subscriptionData, { merge: true });
-        console.log('✅ Subscription updated in Firebase');
         
         // If this subscription became active, ensure no other active subscriptions for this user
         if (subscription.status === 'active') {
@@ -2381,7 +2302,6 @@ async function ensureSingleActiveSubscription(activeSubscription) {
             .get();
         
         if (userQuery.empty) {
-            console.log('⚠️ No user found for customer:', customer.email);
             return;
         }
         
@@ -2396,12 +2316,9 @@ async function ensureSingleActiveSubscription(activeSubscription) {
             .get();
         
         if (!otherActiveSubscriptions.empty) {
-            console.log(`🔄 Found ${otherActiveSubscriptions.docs.length} other active subscriptions for user ${userId}, canceling them...`);
-            
             // Cancel other active subscriptions
             for (const doc of otherActiveSubscriptions.docs) {
                 const subData = doc.data();
-                console.log(`   Canceling duplicate subscription: ${subData.stripeSubscriptionId}`);
                 
                 try {
                     // Cancel in Stripe
@@ -2415,10 +2332,8 @@ async function ensureSingleActiveSubscription(activeSubscription) {
                         cancelAtPeriodEnd: true,
                         updatedAt: new Date().toISOString()
                     });
-                    
-                    console.log(`   ✅ Canceled duplicate: ${subData.stripeSubscriptionId}`);
                 } catch (cancelError) {
-                    console.error(`   ❌ Failed to cancel duplicate ${subData.stripeSubscriptionId}:`, cancelError);
+                    console.error(`Failed to cancel duplicate subscription ${subData.stripeSubscriptionId}:`, cancelError);
                 }
             }
         }
@@ -2428,8 +2343,6 @@ async function ensureSingleActiveSubscription(activeSubscription) {
 }
 
 async function handleSubscriptionDeleted(subscription) {
-    console.log('📋 Subscription deleted:', subscription.id);
-    
     try {
         // Stripe subscription IDs already start with "sub_", so use it directly
         const subscriptionId = subscription.id.startsWith('sub_') 
@@ -2441,14 +2354,12 @@ async function handleSubscriptionDeleted(subscription) {
             canceledAt: new Date().toISOString(),
             updatedAt: new Date().toISOString()
         });
-        console.log('✅ Subscription marked as canceled in Firebase');
     } catch (error) {
-        console.error('❌ Error handling subscription deleted:', error);
+        console.error('Error handling subscription deleted:', error);
     }
 }
 
 async function handleCustomerDeleted(customer) {
-    console.log('📋 Customer deleted:', customer.id);
     
     try {
         // Find and mark all subscriptions for this customer as canceled
